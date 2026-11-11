@@ -28,8 +28,9 @@ Live: <https://mitselek.github.io/rview/>
 
 ## Data
 
-The page ships with four prints of one part, a 25 mm conical roller with a twill skin, picked in
-the panel or with `?part=`: `m3u36` (the default: each cut's flow ramp one half wave long, on the
+The page ships with five parts, picked in the panel or with `?part=`: `m3u37` (the default: a
+9.3 x 10 mm test tube for the elephant-foot compensation) and four prints of a 25 mm conical roller
+with a twill skin: `m3u36` ( each cut's flow ramp one half wave long, on the
 inside of the wall), `m3u35` (the plain model, its two bottom layers pulled in against elephant foot), `m3u34` (a chamfered fat end) and `m3u31` (the first, cut on every turn). Anything else: `index.html?file=<moves.json>&stl=<part.stl>[&flip=1]`.
 
 The JSON holds one entry per gcode move in columns (`seg.x0 … z1`, `w` bead width, `kind`

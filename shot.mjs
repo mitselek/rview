@@ -1,11 +1,12 @@
 // rview: headless screenshots through the DevTools protocol (node >= 22, Brave).
 // Usage: node shot.mjs "<query string>" <shots.json | -> [width height]
+// The page: RVIEW_URL, or http://127.0.0.1:$RVIEW_PORT/index.html (serve this folder, e.g. python3 -m http.server).
 // shots: [{ "out": "/tmp/x.png", "js": "rv.set({blend: 0.5}); rv.cam(...)" }, ...]; each js runs in the page first.
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 const [qs, shotsArg, W = '1600', H = '1000'] = process.argv.slice(2);
 const shots = JSON.parse(readFileSync(shotsArg === '-' ? 0 : shotsArg, 'utf8'));
-const PORT = 9333, URL_ = `http://127.0.0.1:${process.env.RVIEW_PORT ?? 41911}/index.html?${qs}`;
+const PORT = 9333, URL_ = `${process.env.RVIEW_URL ?? `http://127.0.0.1:${process.env.RVIEW_PORT ?? 41911}/index.html`}?${qs}`;
 const gpu = (process.env.RVIEW_GPU ?? '--use-angle=vulkan --enable-features=Vulkan --enable-gpu --ignore-gpu-blocklist').split(' ').filter(Boolean);
 const br = spawn('/opt/brave.com/brave/brave', ['--headless=new', '--user-data-dir=/tmp/rview-brave', '--no-first-run',
   `--remote-debugging-port=${PORT}`, `--window-size=${W},${H}`, '--hide-scrollbars', ...gpu, 'about:blank'], { stdio: 'ignore' });

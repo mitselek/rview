@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.7 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.8 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -326,9 +326,12 @@ const axisTips = [];
   const hex = [0xff4038, 0x4df24d, 0x5999ff][a], dir = new THREE.Vector3().setComponent(a, 1);
   const head = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.05, 16), new THREE.MeshBasicMaterial({ color: hex }));
   head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir); head.position.copy(dir).multiplyScalar(0.5); head.renderOrder = 22;
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const g = c.getContext('2d'); g.font = '300 96px Georgia, "Times New Roman", "DejaVu Serif", serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.shadowColor = '#000000c0'; g.shadowBlur = 6; g.fillStyle = '#' + hex.toString(16).padStart(6, '0'); g.fillText(name, 64, 60);
+  // the letter drawn as single round-ended strokes (no font: the same on every device)
+  const c = document.createElement('canvas'); c.width = c.height = 160;
+  const g = c.getContext('2d'); g.lineCap = g.lineJoin = 'round'; g.lineWidth = 6;
+  g.shadowColor = '#000000c0'; g.shadowBlur = 5; g.strokeStyle = '#' + hex.toString(16).padStart(6, '0');
+  const STROKES = { x: [[57, 54, 103, 106], [103, 54, 57, 106]], y: [[57, 54, 80, 106], [103, 54, 66, 138]], z: [[57, 54, 103, 54, 57, 106, 103, 106]] };
+  for (const st of STROKES[name]) { g.beginPath(); g.moveTo(st[0], st[1]); for (let i = 2; i < st.length; i += 2) g.lineTo(st[i], st[i + 1]); g.stroke(); }
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, sizeAttenuation: false }));
   label.position.copy(dir).multiplyScalar(-0.5); label.scale.setScalar(0.07); label.renderOrder = 23;
@@ -434,7 +437,7 @@ function tick() {
     t.head.position.copy(t.dir).multiplyScalar(out);
     const d = Math.max(depthOf(at.clone().addScaledVector(t.dir, out * len)), camera.near);
     t.head.scale.setScalar(Math.min(1, 0.022 * d / (0.05 * len)));
-    t.label.scale.setScalar(0.042 / len);
+    t.label.scale.setScalar(0.032 / len);
   }
 }
 
@@ -604,7 +607,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.7 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.8 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

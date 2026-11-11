@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.1 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.2 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -393,6 +393,7 @@ function jogs() {
 
 function tick() {
   jogs();
+  if (arrows && arrows.visible && dirty > 0) placeArrows();
   if (now !== null) marker.scale.setScalar(Math.max(depthOf(nowPos), camera.near) * 0.035);
   if (glide) {
     const t = Math.min(1, (performance.now() - glide.t0) / 260), e = t * t * (3 - 2 * t);
@@ -412,34 +413,54 @@ const ARROW = (() => {     // along +Y, tail at the origin, length 1
   return mergeGeometries([shaft, cone]);
 })();
 let arrows = null;
+let hopAt = [];        // per hop: the cut point, the strand's own direction there, the outward direction
 function buildArrows() {
   if (arrows) { scene.remove(arrows); arrows.dispose(); arrows = null; }
   const hs = D.hops ?? [];
   if (!hs.length) { $('hopkey').textContent = 'no hops in this file'; return; }
-  const size = +$('hsize').value, L = 0.8 * size, [cx, cy] = D.meta.centre;
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), p = new THREE.Vector3(), sc = new THREE.Vector3(L, L, L), Y = new THREE.Vector3(0, 1, 0);
+  const [cx, cy] = D.meta.centre;
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.45, transparent: true, clippingPlanes: planes });
   mat.onBeforeCompile = sh => timed(sh, HALF);
-  // an arrow lives at the time of the bead it belongs to (found by gcode line)
   const when = new Float32Array(hs.length);
-  hs.forEach((h, j) => { let lo = 0, hi = N - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (S.line[mid] < h.bead.line) lo = mid + 1; else hi = mid; } when[j] = tEnd[lo]; });
-  ARROW.setAttribute('tm', new THREE.InstancedBufferAttribute(when, 1));
   arrows = new THREE.InstancedMesh(ARROW, mat, hs.length);
   let bad = 0;
-  hs.forEach((h, j) => {
-    v.fromArray(h.vec).normalize(); q.setFromUnitVectors(Y, v);
-    p.set(h.x, h.y, h.z); if (h.dir === 'out') p.addScaledVector(v, -L);
-    // float it just outside the wall so the beads do not hide it
-    const rx = h.x - cx, ry = h.y - cy, rl = Math.hypot(rx, ry) || 1;
-    p.x += rx / rl * 0.45 * size; p.y += ry / rl * 0.45 * size;
+  hopAt = hs.map((h, j) => {
+    // the bead the hop belongs to, found by gcode line: an entry's first bead, an exit's last
+    let lo = 0, hi = N - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (S.line[mid] < h.bead.line) lo = mid + 1; else hi = mid; }
+    when[j] = tEnd[lo];
+    // the strand's direction right at the cut: over its nearest 0.25 mm, not a longer average
+    const out = h.dir === 'out', step = out ? -1 : 1, at = new THREE.Vector3(h.x, h.y, h.z), far = new THREE.Vector3();
+    for (let i = lo, len = 0; i >= 0 && i < N && S.kind[i] === 0 && len < 0.25; i += step) {
+      len += Math.hypot(S.x1[i] - S.x0[i], S.y1[i] - S.y0[i], S.z1[i] - S.z0[i]);
+      if (out) far.set(S.x0[i], S.y0[i], S.z0[i]); else far.set(S.x1[i], S.y1[i], S.z1[i]);
+    }
+    const v = out ? at.clone().sub(far) : far.sub(at);
+    if (v.lengthSq() < 1e-10) v.fromArray(h.vec); v.normalize();
+    const r = new THREE.Vector3(h.x - cx, h.y - cy, 0); if (r.lengthSq() < 1e-10) r.set(1, 0, 0); r.normalize();
     // a seam ramp restarts each turn some mm back on purpose: that flag alone is not a fault
     const flagged = h.flags.some(f => f !== RAMP_FLAG); if (flagged) bad++;
-    arrows.setMatrixAt(j, m.compose(p, q, sc));
     arrows.setColorAt(j, new THREE.Color(flagged ? BAD_COL : h.radial === 'out' ? OUT_COL : IN_COL));
+    return { at, v, r, out, q: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), v) };
   });
-  arrows.frustumCulled = false; arrows.renderOrder = 6; scene.add(arrows);
+  ARROW.setAttribute('tm', new THREE.InstancedBufferAttribute(when, 1));
+  arrows.frustumCulled = false; arrows.renderOrder = 6; scene.add(arrows); placeArrows();
   const sw = c => `<i style="background:#${c.toString(16).padStart(6, '0')}"></i>`;
   $('hopkey').innerHTML = `<label>${sw(OUT_COL)} heading outward</label><label>${sw(IN_COL)} heading inward</label><label>${sw(BAD_COL)} flagged (${bad} of ${hs.length})</label>`;
+}
+// Each frame: an exit arrow's tip, an entry arrow's tail, on the cut point itself. With the whole print shown
+// the arrow floats just outside the wall (else the beads bury it); in time travel the wall is a ghost, so it
+// sits on the spot and shows through. Up close it shrinks, so it never dwarfs the bead.
+const _am = new THREE.Matrix4(), _ap = new THREE.Vector3(), _as = new THREE.Vector3();
+function placeArrows() {
+  const size = +$('hsize').value, whole = now === null;
+  hopAt.forEach((a, j) => {
+    const L = Math.min(0.8 * size, Math.max(0.2, 0.03 * size * Math.max(depthOf(a.at), 0)));
+    _ap.copy(a.at); if (a.out) _ap.addScaledVector(a.v, -L);
+    if (whole) _ap.addScaledVector(a.r, 0.5625 * L);
+    arrows.setMatrixAt(j, _am.compose(_ap, a.q, _as.set(L, L, L)));
+  });
+  arrows.instanceMatrix.needsUpdate = true;
+  arrows.material.depthTest = whole;
 }
 
 // ---- beads: each unbroken run of extruding moves swept as one rounded solid -----------------
@@ -550,7 +571,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.1 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.2 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

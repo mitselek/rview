@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview v0.1 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.1 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -550,7 +550,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.1 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

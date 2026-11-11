@@ -1,0 +1,467 @@
+<!doctype html>
+<!-- rview v0.1 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+     Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
+     With no ?file= the demo part loads. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rview - render preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1d22; color: #ddd; font: 13px/1.35 system-ui, sans-serif; overflow: hidden; }
+  #ui { position: absolute; left: 0; top: 0; width: 280px; max-height: 100%; overflow-y: auto; background: #23262cd8; padding: 8px 10px; box-sizing: border-box; z-index: 2; border-radius: 0 0 8px 0; }
+  #ui h3 { margin: 10px 0 4px; font-size: 11px; color: #9cf; text-transform: uppercase; letter-spacing: .05em; }
+  #ui label { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #ui input[type=range] { flex: 1; min-width: 0; }
+  #ui .v { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+  #ui i { width: 11px; height: 11px; display: inline-block; border-radius: 2px; flex: none; }
+  #stops { display: flex; justify-content: space-between; font-size: 11px; color: #aaa; }
+  #status { color: #fc6; font-size: 11px; white-space: pre-wrap; }
+  #blend { width: 100%; }
+  #vig { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(0,0,0,.42) 100%); }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="vig"></div>
+<div id="ui">
+  <h3>Model &harr; print &harr; gcode</h3>
+  <input type="range" id="blend" min="0" max="1" step="0.005" value="0">
+  <div id="stops"><span>model</span><span>print</span><span>gcode</span></div>
+  <h3>Opacity</h3>
+  <label><input type="checkbox" id="show_model" checked> model <input type="range" id="op_model" min="0" max="1" step="0.02" value="1"></label>
+  <div id="groups"></div>
+  <h3>Cut</h3>
+  <label>z max <input type="range" id="zmax" min="0" max="1" step="0.01" value="1"><span class="v" id="zmax_v"></span></label>
+  <label><input type="checkbox" id="section"> half section</label>
+  <h3>Look</h3>
+  <label>exposure <input type="range" id="expo" min="0.3" max="2.5" step="0.05" value="1"></label>
+  <label>shadows <input type="range" id="ao" min="0" max="2" step="0.05" value="1"></label>
+  <label>gloss <input type="range" id="gloss" min="0" max="1" step="0.02" value="0.68"></label>
+  <label><input type="checkbox" id="light_bg"> light backdrop</label>
+  <div>drag: turn around the grabbed point. right-drag or shift-drag: pan. wheel: zoom to the pointer. double-click: centre that spot. keys: f fit, c copy view to the address bar. axes: x red, y green, z blue.</div>
+  <div id="status">loading</div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+if (!Q.has('file')) { Q.set('file', 'data/m3u31.json'); Q.set('stl', 'data/m3u31.stl'); Q.set('flip', '1'); }   // the demo part
+const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
+  'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
+  'Skirt/Brim': 0x777777, 'Support material': 0x65a30d, 'Gap fill': 0xfacc15, 'Custom': 0x888888 };
+const SPS_COL = 0xff8a1f;
+const PLASTIC = new THREE.Color(Q.get('color') ? '#' + Q.get('color') : 0xb30f14);
+const KS = +(Q.get('k') ?? 6);          // arc steps on each side of a bead's section
+const RING = 2 * (KS + 1);
+
+// ---- renderer, scene, lights -------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.localClippingEnabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(renderer), 0.03).texture;
+scene.environmentIntensity = 0.45;
+const camera = new THREE.PerspectiveCamera(28, innerWidth / innerHeight, 0.05, 3000);
+camera.up.set(0, 0, 1);
+const key = new THREE.DirectionalLight(0xfff4e6, 2.6);
+key.castShadow = true; key.shadow.mapSize.set(4096, 4096); key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.radius = 3; key.shadow.autoUpdate = false;
+scene.add(key, key.target);
+const rim = new THREE.DirectionalLight(0xdde8ff, 0.9); scene.add(rim, rim.target);
+const ground = new THREE.Mesh(new THREE.CircleGeometry(400, 96), new THREE.ShadowMaterial({ opacity: 0.4 }));   // shadow catcher: no horizon
+ground.receiveShadow = true; ground.position.z = -0.005; scene.add(ground);
+
+const zPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
+const secPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let planes = [zPlane];
+const U = { mix: { value: 0 } };
+
+function plastic(vertexColors) {
+  const m = new THREE.MeshPhysicalMaterial({ color: PLASTIC, roughness: 0.32, metalness: 0, clearcoat: 0.35, clearcoatRoughness: 0.3,
+    vertexColors, clippingPlanes: planes, clipShadows: true, side: THREE.DoubleSide });
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uMix = U.mix;
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uMix;')
+      .replace('#include <color_fragment>', vertexColors ? 'diffuseColor.rgb = mix(diffuseColor.rgb, vColor.rgb, uMix);' : '')
+      // the inside of a cut solid shows flat, like a sawn face
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (!gl_FrontFacing) gl_FragColor.rgb = diffuseColor.rgb * 0.8;');
+  };
+  return m;
+}
+
+const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+const gtao = new GTAOPass(scene, camera, innerWidth, innerHeight);
+gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1.4, thickness: 1.2, scale: 1.25, samples: 16, screenSpaceRadius: false });
+composer.addPass(gtao);
+composer.addPass(new OutputPass());
+
+// the glass model must not shade the beads under it: leave it out of the AO buffer while it is see-through
+let model = null;
+const aoHide = gtao.overrideVisibility.bind(gtao);
+gtao.overrideVisibility = () => { aoHide(); ground.visible = false; if (model && model.material.opacity < 0.99) model.visible = false; };
+
+
+// ---- navigation: turn around the grabbed point, up stays up -------------------------------------
+const pivot = new THREE.Vector3(), Zup = new THREE.Vector3(0, 0, 1);
+const canvas = renderer.domElement; canvas.style.touchAction = 'none';
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+const pickRT = new THREE.WebGLRenderTarget(1, 1), pickBuf = new Uint8Array(4);
+const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
+
+// the surface point under a screen pixel (one 1 x 1 depth render), or null over empty space
+function pick(cx, cy) {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const keep = [ground.visible, axes.visible, model ? model.visible : false, scene.background];
+  ground.visible = axes.visible = false; if (model && model.material.opacity < 0.5) model.visible = false;
+  scene.background = null; scene.overrideMaterial = depthMat; depthMat.clippingPlanes = planes;
+  camera.setViewOffset(w, h, cx, cy, 1, 1);
+  const col = renderer.getClearColor(new THREE.Color()), al = renderer.getClearAlpha();
+  renderer.setRenderTarget(pickRT); renderer.setClearColor(0xffffff, 1); renderer.clear(); renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(pickRT, 0, 0, 1, 1, pickBuf);
+  renderer.setRenderTarget(null); renderer.setClearColor(col, al);
+  camera.clearViewOffset(); scene.overrideMaterial = null;
+  [ground.visible, axes.visible] = keep; if (model) model.visible = keep[2]; scene.background = keep[3];
+  const d = 255 / 256 * (pickBuf[0] / 255 / 16777216 + pickBuf[1] / 255 / 65536 + pickBuf[2] / 255 / 256 + pickBuf[3] / 255);
+  if (d >= 0.99999) return null;
+  camera.updateMatrixWorld();
+  return new THREE.Vector3(cx / w * 2 - 1, -(cy / h * 2 - 1), d * 2 - 1).unproject(camera);
+}
+const fwd = () => new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+const depthOf = p => p.clone().sub(camera.position).dot(fwd());
+const onScreen = p => { const q = p.clone().project(camera); return Math.abs(q.x) < 1 && Math.abs(q.y) < 1 && q.z < 1; };
+// where the view's centre line is as deep as the pivot: the "target" of a saved view
+const lookPoint = () => camera.position.clone().addScaledVector(fwd(), Math.max(depthOf(pivot), camera.near * 4));
+// the point under the pointer, or the pointer's ray at the pivot's depth when it is over nothing
+function grab(cx, cy) {
+  const hit = pick(cx, cy); if (hit) return hit;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const ray = new THREE.Vector3(cx / w * 2 - 1, -(cy / h * 2 - 1), 0.5).unproject(camera).sub(camera.position).normalize();
+  const ref = onScreen(pivot) ? pivot : centre;
+  return camera.position.clone().addScaledVector(ray, Math.max(depthOf(ref), camera.near * 4) / ray.dot(fwd()));
+}
+const _q = new THREE.Quaternion();
+function turn(dx, dy) {
+  const k = 2 * Math.PI / canvas.clientHeight, f = fwd(), el = Math.asin(Math.max(-1, Math.min(1, -f.z)));
+  const lim = 89 * Math.PI / 180, a = el - Math.max(-lim, Math.min(lim, el + dy * k));      // pitch, no roll, no flip
+  const about = (axis, ang) => {
+    _q.setFromAxisAngle(axis, ang);
+    camera.position.sub(pivot).applyQuaternion(_q).add(pivot); camera.quaternion.premultiply(_q);
+  };
+  about(Zup, -dx * k);                                                            // spin about the vertical
+  about(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), a);        // then tilt about the new sideways axis
+  camera.quaternion.normalize(); dirty = 2;
+}
+function pan(dx, dy, depth) {
+  const wpp = 2 * depth * Math.tan(camera.fov * Math.PI / 360) / canvas.clientHeight;
+  camera.position.addScaledVector(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), -dx * wpp)
+    .addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), dy * wpp);
+  dirty = 2;
+}
+function zoomAt(p, factor) {
+  const o = camera.position.clone().sub(p), len = o.length() * factor;
+  if (len < camera.near * 3 || len > camera.far / 3) return;
+  camera.position.copy(p).add(o.multiplyScalar(factor)); dirty = 2;
+}
+let glide = null;       // double-click: slide the camera so the spot comes to the centre
+function focus(p) {
+  const to = p.clone().addScaledVector(fwd(), -depthOf(p));
+  glide = { from: camera.position.clone(), to, t0: performance.now() }; pivot.copy(p);
+}
+
+const ptrs = new Map(); let mode = null, turning = false, panDepth = 1, pinch = null, lastTap = null, moved = 0, zoomHit = null;
+canvas.addEventListener('pointerdown', e => {
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]); moved = 0; glide = null;
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, at = grab(mx, my);
+    mode = 'pinch'; turning = false; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), mx, my, at }; panDepth = depthOf(at);
+  } else if (e.button === 2 || e.button === 1 || e.shiftKey) { mode = 'pan'; panDepth = depthOf(grab(e.clientX, e.clientY)); }
+  else {
+    mode = 'turn'; turning = true;
+    pivot.copy(pick(e.clientX, e.clientY) ?? (onScreen(pivot) ? pivot : centre));
+  }
+  dirty = 2;
+});
+canvas.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p[0], dy = e.clientY - p[1]; p[0] = e.clientX; p[1] = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
+  if (mode === 'turn') turn(dx, dy);
+  else if (mode === 'pan') pan(dx, dy, panDepth);
+  else if (mode === 'pinch' && ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    pan(mx - pinch.mx, my - pinch.my, panDepth); zoomAt(pinch.at, pinch.d / Math.max(d, 1));
+    pinch.d = d; pinch.mx = mx; pinch.my = my;
+  }
+});
+const lift = e => {
+  if (!ptrs.delete(e.pointerId)) return;
+  if (mode === 'turn' && moved < 6) {           // a tap; two close taps = double-click
+    const now = performance.now();
+    if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) {
+      const hit = pick(e.clientX, e.clientY); if (hit) focus(hit); lastTap = null;
+    } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+  }
+  mode = null; turning = false; dirty = 2;
+};
+canvas.addEventListener('pointerup', lift); canvas.addEventListener('pointercancel', lift);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault(); glide = null;
+  const now = performance.now();      // one pick per wheel gesture
+  if (!zoomHit || now - zoomHit.t > 300 || Math.hypot(e.clientX - zoomHit.x, e.clientY - zoomHit.y) > 4) zoomHit = { p: grab(e.clientX, e.clientY), x: e.clientX, y: e.clientY };
+  zoomHit.t = now;
+  zoomAt(zoomHit.p, Math.exp((e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY) * 0.0015));
+}, { passive: false });
+
+// ---- axis hairlines: at the turning point while turning (fading away from it), else at the part's origin
+function hairlines(depthTest, alpha) {
+  const pos = [], col = [], C = [[1, 0.25, 0.22], [0.3, 0.95, 0.3], [0.35, 0.6, 1]], N = 24;
+  for (let a = 0; a < 3; a++) for (const s of [-1, 1]) for (let i = 0; i < N; i++) {
+    const t0 = i / N, t1 = (i + 1) / N, e0 = [0, 0, 0], e1 = [0, 0, 0]; e0[a] = s * t0; e1[a] = s * t1;
+    pos.push(...e0, ...e1); col.push(...C[a], alpha * (1 - t0) ** 2, ...C[a], alpha * (1 - t1) ** 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
+  const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthTest, depthWrite: false, toneMapped: false }));
+  l.frustumCulled = false; l.renderOrder = depthTest ? 20 : 21; return l;
+}
+const axes = new THREE.Group(); axes.add(hairlines(true, 1), hairlines(false, 0.22)); scene.add(axes);
+const origin = new THREE.Vector3();
+function tick() {
+  if (glide) {
+    const t = Math.min(1, (performance.now() - glide.t0) / 260), e = t * t * (3 - 2 * t);
+    camera.position.lerpVectors(glide.from, glide.to, e); dirty = 2; if (t >= 1) glide = null;
+  }
+  const at = turning ? pivot : origin;
+  // turning: the lines reach half the view from the grabbed point; resting: they span the part
+  const len = turning ? Math.max(depthOf(pivot), camera.near) * Math.tan(camera.fov * Math.PI / 360) * 1.1 : box.getSize(new THREE.Vector3()).length() * 0.9;
+  axes.position.copy(at); axes.scale.setScalar(len || 1);
+}
+
+// ---- beads: each unbroken run of extruding moves swept as one rounded solid -----------------
+let D = null, S = null, N = 0, groups = [], box = new THREE.Box3(), centre = new THREE.Vector3();
+
+function groupOf(i) { return S.src[i] === 1 ? 'sps skin' : D.meta.types[S.type[i]]; }
+
+function runs() {
+  const out = {}; let cur = null;
+  for (let i = 0; i < N; i++) {
+    if (S.kind[i] !== 0) { cur = null; continue; }
+    const g = groupOf(i);
+    const joined = cur && cur.g === g && Math.abs(S.x0[i] - cur.x) + Math.abs(S.y0[i] - cur.y) + Math.abs(S.z0[i] - cur.z) < 2e-3;
+    if (!joined) { cur = { g, segs: [] }; (out[g] ??= []).push(cur); }
+    cur.segs.push(i); cur.x = S.x1[i]; cur.y = S.y1[i]; cur.z = S.z1[i];
+  }
+  return out;
+}
+
+const CA = new Float32Array(RING), SA = new Float32Array(RING), SX = new Float32Array(RING);
+for (let k = 0; k <= KS; k++) {
+  const a = -Math.PI / 2 + Math.PI * k / KS;
+  CA[k] = Math.cos(a); SA[k] = Math.sin(a); SX[k] = 1;
+  CA[KS + 1 + k] = -Math.cos(a); SA[KS + 1 + k] = -Math.sin(a); SX[KS + 1 + k] = -1;
+}
+const CAPS = [[0.5, 0.866], [0.0, 1.0]];   // end caps: [scale across, push along] per extra ring
+
+function sweep(list, col, h) {
+  let nr = 0, nq = 0;
+  for (const r of list) { nr += r.segs.length + 1 + 2 * CAPS.length; nq += r.segs.length + 2 * CAPS.length; }
+  const pos = new Float32Array(nr * RING * 3), nor = new Float32Array(nr * RING * 3), colr = new Float32Array(nr * RING * 3);
+  const idx = new Uint32Array(nq * RING * 6);
+  let v = 0, t = 0;
+  const T = new THREE.Vector3(), Sd = new THREE.Vector3(), Up = new THREE.Vector3(), d0 = new THREE.Vector3(), d1 = new THREE.Vector3(), Z = new THREE.Vector3(0, 0, 1);
+  const ring = (px, py, pz, w, across, along, mitre, c) => {
+    // one section ring at p (the nozzle point: the bead hangs h below it), scaled across, leaning along T
+    const rx = Math.min(w, h) / 2, cx = Math.max(0, (w - h) / 2), nl = Math.hypot(across, along) || 1;
+    for (let k = 0; k < RING; k++) {
+      const u = (SX[k] * cx + rx * CA[k]) * across * mitre, vv = (h / 2) * SA[k];
+      pos[v] = px + Sd.x * u + Up.x * vv; pos[v + 1] = py + Sd.y * u + Up.y * vv; pos[v + 2] = pz - h / 2 + Sd.z * u + Up.z * vv;
+      const nx = CA[k] * across / nl, nz = SA[k] * across / nl, na = along / nl;
+      nor[v] = Sd.x * nx + Up.x * nz + T.x * na; nor[v + 1] = Sd.y * nx + Up.y * nz + T.y * na; nor[v + 2] = Sd.z * nx + Up.z * nz + T.z * na;
+      colr[v] = c.r; colr[v + 1] = c.g; colr[v + 2] = c.b; v += 3;
+    }
+  };
+  for (const r of list) {
+    const n = r.segs.length, base = v / 3;
+    const w = j => S.w[r.segs[j]] > 0.02 ? S.w[r.segs[j]] : 0.02;
+    for (let j = 0; j <= n; j++) {
+      const a = r.segs[Math.max(j - 1, 0)], b = r.segs[Math.min(j, n - 1)];
+      d0.set(S.x1[a] - S.x0[a], S.y1[a] - S.y0[a], S.z1[a] - S.z0[a]).normalize();
+      d1.set(S.x1[b] - S.x0[b], S.y1[b] - S.y0[b], S.z1[b] - S.z0[b]).normalize();
+      T.addVectors(d0, d1); if (T.lengthSq() < 1e-6) T.copy(d1); T.normalize();
+      Sd.crossVectors(Z, T); if (Sd.lengthSq() < 1e-9) Sd.set(1, 0, 0); Sd.normalize();
+      Up.crossVectors(T, Sd).normalize();
+      const mitre = Math.min(2, 1 / Math.max(0.5, T.dot(d1)));
+      const wj = j === 0 ? w(0) : j === n ? w(n - 1) : (w(j - 1) + w(j)) / 2;
+      const px = j < n ? S.x0[b] : S.x1[a], py = j < n ? S.y0[b] : S.y1[a], pz = j < n ? S.z0[b] : S.z1[a];
+      if (j === 0) for (let m = CAPS.length - 1; m >= 0; m--) {
+        const o = CAPS[m][1] * wj / 2; ring(px - T.x * o, py - T.y * o, pz - T.z * o, wj, Math.max(CAPS[m][0], 0.02), -CAPS[m][1], 1, col);
+      }
+      ring(px, py, pz, wj, 1, 0, mitre, col);
+      if (j === n) for (let m = 0; m < CAPS.length; m++) {
+        const o = CAPS[m][1] * wj / 2; ring(px + T.x * o, py + T.y * o, pz + T.z * o, wj, Math.max(CAPS[m][0], 0.02), CAPS[m][1], 1, col);
+      }
+    }
+    const rings = v / 3 / RING - base / RING;
+    for (let q = 0; q < rings - 1; q++) for (let k = 0; k < RING; k++) {
+      const a = base + q * RING + k, b = base + q * RING + (k + 1) % RING, c = a + RING, d = b + RING;
+      idx[t++] = a; idx[t++] = b; idx[t++] = c; idx[t++] = b; idx[t++] = d; idx[t++] = c;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(colr, 3));
+  g.setIndex(new THREE.BufferAttribute(idx.subarray(0, t), 1));
+  return g;
+}
+
+function load(data) {
+  D = data; S = data.seg; N = data.meta.count;
+  const all = runs(), h = D.meta.height;
+  let tris = 0;
+  for (const name of Object.keys(all).sort((a, b) => (a === 'sps skin' ? -1 : b === 'sps skin' ? 1 : a.localeCompare(b)))) {
+    const hex = name === 'sps skin' ? SPS_COL : (TYPE_COL[name] ?? 0x999999);
+    const geo = sweep(all[name], new THREE.Color(hex), h);
+    const mesh = new THREE.Mesh(geo, plastic(true));
+    mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false;
+    scene.add(mesh); tris += geo.index.count / 3;
+    const on = name !== 'Custom';
+    if (on) { geo.computeBoundingBox(); box.union(geo.boundingBox); }
+    groups.push({ name, mesh, hex, on });
+  }
+  $('groups').innerHTML = groups.map((g, j) => `<label><input type="checkbox" id="g${j}" ${g.on ? 'checked' : ''}> <i style="background:#${g.hex.toString(16).padStart(6, '0')}"></i>${g.name} <input type="range" id="o${j}" min="0" max="1" step="0.02" value="1"></label>`).join('');
+  groups.forEach((g, j) => { $('g' + j).oninput = $('o' + j).oninput = apply; });
+  box.getCenter(centre); origin.set(centre.x, centre.y, 0);
+  $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
+  $('status').textContent = `${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  const stl = Q.get('stl');
+  if (stl) new STLLoader().load(stl, geo => {
+    geo = toCreasedNormals(geo, Math.PI / 5);
+    geo.computeBoundingBox();
+    const c = geo.boundingBox.getCenter(new THREE.Vector3());
+    model = new THREE.Mesh(geo, plastic(false));
+    if (Q.get('flip') === '1') { geo.rotateX(Math.PI); geo.computeBoundingBox(); geo.boundingBox.getCenter(c); }   // printed upside down
+    model.position.set(centre.x - c.x, centre.y - c.y, -geo.boundingBox.min.z);
+    model.castShadow = model.receiveShadow = true; model.renderOrder = 5;
+    scene.add(model); start();
+  }); else start();
+}
+
+function start() {
+  const r = box.getSize(new THREE.Vector3()).length();
+  ground.position.x = centre.x; ground.position.y = centre.y;
+  key.target.position.copy(centre); key.position.set(centre.x - r * 1.1, centre.y - r * 1.6, centre.z + r * 2.2);
+  const sc = key.shadow.camera; sc.left = sc.bottom = -r * 0.9; sc.right = sc.top = r * 0.9; sc.near = r * 0.5; sc.far = r * 6; sc.updateProjectionMatrix();
+  rim.target.position.copy(centre); rim.position.set(centre.x + r * 2, centre.y + r * 1.5, centre.z + r * 0.8);
+  for (const id of ['blend', 'show_model', 'op_model', 'zmax', 'section', 'expo', 'ao', 'gloss', 'light_bg']) {
+    if (Q.has(id)) { const e = $(id); if (e.type === 'checkbox') e.checked = Q.get(id) === '1'; else e.value = Q.get(id); }
+    $(id).addEventListener('input', apply);
+  }
+  groups.forEach((g, j) => { if (Q.has('o' + j)) $('o' + j).value = Q.get('o' + j); if (Q.has('g' + j)) $('g' + j).checked = Q.get('g' + j) === '1'; });
+  if (Q.get('ui') === '0') $('ui').style.display = 'none';
+  fit();
+  if (Q.has('cam')) { const c = Q.get('cam').split(',').map(Number); rv.cam(...c); }
+  apply();
+  let frames = 0;
+  (function loop() {
+    requestAnimationFrame(loop); tick();
+    if (dirty > 0) { dirty--; composer.render(); }       // draw only when something moved
+    if (++frames === 12) document.title = 'rview ready';
+  })();
+}
+
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function setOpacity(m, op) {
+  const tr = op < 0.995;
+  if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true; }
+  m.opacity = op; m.depthWrite = !tr;
+}
+let dirty = 30;
+function apply() {
+  dirty = Math.max(dirty, 4); key.shadow.needsUpdate = true;
+  const t = +$('blend').value, rough = 1 - 0.7 * +$('gloss').value - 0.2;
+  U.mix.value = smooth(0.5, 1, t);
+  const mo = (1 - smooth(0, 0.5, t)) * +$('op_model').value;
+  if (model) {
+    model.visible = $('show_model').checked && mo > 0.004; setOpacity(model.material, mo);
+    model.material.roughness = Math.max(0.05, rough); model.castShadow = mo > 0.5;
+    const side = $('section').checked && mo > 0.99 ? THREE.DoubleSide : THREE.FrontSide;
+    if (model.material.side !== side) { model.material.side = side; model.material.needsUpdate = true; }
+    model.material.clippingPlanes = planes;
+  }
+  planes = $('section').checked ? [zPlane, secPlane] : [zPlane];
+  zPlane.constant = +$('zmax').value; secPlane.constant = -centre.y;
+  $('zmax_v').textContent = (+$('zmax').value).toFixed(2);
+  groups.forEach((g, j) => {
+    const op = +$('o' + j).value;
+    g.mesh.visible = $('g' + j).checked && op > 0.004 && (t > 0.001 || !model || !$('show_model').checked);
+    setOpacity(g.mesh.material, op); g.mesh.castShadow = op > 0.5;
+    g.mesh.material.roughness = Math.max(0.05, rough); g.mesh.material.clippingPlanes = planes;
+  });
+  if (model) model.material.clippingPlanes = planes;
+  gtao.normalMaterial.clippingPlanes = planes;
+  gtao.blendIntensity = +$('ao').value; gtao.enabled = !$('section').checked;   // AO reads the cut faces wrongly: off in section
+  renderer.toneMappingExposure = +$('expo').value;
+  const light = $('light_bg').checked;
+  // the neutral tone map crushes darks (out = 6.25 x^2 below 0.08): feed it the colour that comes out as wanted
+  const bg = new THREE.Color(light ? 0xb4b8be : 0x2a2c31);
+  for (const ch of ['r', 'g', 'b']) bg[ch] = bg[ch] < 0.04 ? Math.sqrt(bg[ch] / 6.25) : bg[ch] + 0.04;
+  scene.background = bg;
+}
+
+function fit() {
+  const r = box.getSize(new THREE.Vector3()).length();
+  camera.position.set(centre.x + r * 1.1, centre.y - r * 1.9, centre.z + r * 0.9);
+  camera.lookAt(centre); pivot.copy(centre); dirty = 6;
+  camera.near = r / 600; camera.far = r * 80; camera.updateProjectionMatrix();
+}
+addEventListener('keydown', e => {
+  if (e.key === 'f') fit();
+  if (e.key === 'c') {
+    const p = camera.position, q = lookPoint(), u = new URL(location.href);
+    u.searchParams.set('cam', [p.x, p.y, p.z, q.x, q.y, q.z].map(x => x.toFixed(2)).join(','));
+    for (const id of ['blend', 'zmax', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
+    for (const id of ['section', 'light_bg']) u.searchParams.set(id, $(id).checked ? '1' : '0');
+    history.replaceState(null, '', u);
+  }
+});
+addEventListener('resize', () => {
+  dirty = 4;
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+window.rv = {
+  set(o) { for (const [k, v] of Object.entries(o)) { const e = $(k); if (e.type === 'checkbox') e.checked = !!v; else e.value = v; } apply(); },
+  cam(px, py, pz, tx, ty, tz) { camera.position.set(px, py, pz); camera.lookAt(tx, ty, tz); pivot.set(tx, ty, tz); dirty = 6; },
+  // look at a point from an azimuth/elevation (deg) and distance (mm)
+  look(tx, ty, tz, az, el, dist) { const a = az * Math.PI / 180, e = el * Math.PI / 180; this.cam(tx + dist * Math.cos(e) * Math.cos(a), ty + dist * Math.cos(e) * Math.sin(a), tz + dist * Math.sin(e), tx, ty, tz); },
+  ui(on) { $('ui').style.display = on ? '' : 'none'; },
+  gl() { const g = renderer.getContext(), x = g.getExtension('WEBGL_debug_renderer_info'); return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'unknown'; },
+  centre, box, groups, pick, pivot, THREE, renderer, scene, key, rim, ground, gtao, camera, get model() { return model; },
+};
+const file = Q.get('file');
+if (file) fetch(file).then(r => r.json()).then(load).catch(e => { $('status').textContent = 'load failed: ' + e; console.error(e); });
+else $('status').textContent = 'add ?file=data/x.json&stl=data/x.stl';
+</script>
+</body>
+</html>

@@ -11,6 +11,8 @@ Live: <https://mitselek.github.io/rview/>
   **gcode** (the beads coloured by strategy). In between, the model fades to glass over the beads.
 - Opacity per strategy (the single-path skin and each slicer line type), a height cut and a rough
   half section.
+- Hop arrows at the gcode end: where the strand is cut (the arrow's tip at the cut) and where it
+  starts again (its tail there); green heading outward, magenta inward, red flagged.
 - Navigation: drag turns around the point you grab (up stays up), right-drag or shift-drag pans,
   the wheel zooms to the pointer, double-click centres a spot, `f` fits the part, `c` copies the
   view into the address bar. Axis hairlines (x red, y green, z blue) cross at the turning point
@@ -23,7 +25,8 @@ conical roller with a twill skin (`data/m3u31.json`, `data/m3u31.stl`).
 
 The JSON holds one entry per gcode move in columns (`seg.x0 … z1`, `w` bead width, `kind`
 0 bead / 1 travel / 2 retract, `src` 1 for the single-path skin, `type` index into `meta.types`)
-plus `meta.height` (layer height) and `meta.count`. The extractor that writes it is not in this
+plus `meta.height` (layer height), `meta.count`, `meta.centre` and the `hops` list (`x y z`, `dir`,
+`vec`, `radial`, `flags`). The extractor that writes it is not in this
 repository yet.
 
 ## Limits (v0.1)

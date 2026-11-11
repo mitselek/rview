@@ -36,6 +36,9 @@
   <h3>Opacity</h3>
   <label><input type="checkbox" id="show_model" checked> model <input type="range" id="op_model" min="0" max="1" step="0.02" value="1"></label>
   <div id="groups"></div>
+  <h3>Hops (gcode end)</h3>
+  <label><input type="checkbox" id="show_hops" checked> cut arrows <input type="range" id="hsize" min="0.3" max="4" step="0.1" value="1.5"></label>
+  <div id="hopkey"></div>
   <h3>Cut</h3>
   <label>z max <input type="range" id="zmax" min="0" max="1" step="0.01" value="1"><span class="v" id="zmax_v"></span></label>
   <label><input type="checkbox" id="section"> half section</label>
@@ -55,7 +58,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
+import { toCreasedNormals, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
@@ -257,6 +260,38 @@ function tick() {
   axes.position.copy(at); axes.scale.setScalar(len || 1);
 }
 
+// ---- hop arrows: where the strand is cut (exit: the tip at the cut) and where it starts again (entry: the tail there)
+const OUT_COL = 0x22e07a, IN_COL = 0xd946ef, BAD_COL = 0xff2020, RAMP_FLAG = 're-entry != previous exit';
+const ARROW = (() => {     // along +Y, tail at the origin, length 1
+  const shaft = new THREE.CylinderGeometry(0.06, 0.06, 0.6, 10); shaft.translate(0, 0.3, 0);
+  const cone = new THREE.ConeGeometry(0.16, 0.4, 14); cone.translate(0, 0.8, 0);
+  return mergeGeometries([shaft, cone]);
+})();
+let arrows = null;
+function buildArrows() {
+  if (arrows) { scene.remove(arrows); arrows.dispose(); arrows = null; }
+  const hs = D.hops ?? [];
+  if (!hs.length) { $('hopkey').textContent = 'no hops in this file'; return; }
+  const size = +$('hsize').value, L = 0.8 * size, [cx, cy] = D.meta.centre;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), p = new THREE.Vector3(), sc = new THREE.Vector3(L, L, L), Y = new THREE.Vector3(0, 1, 0);
+  arrows = new THREE.InstancedMesh(ARROW, new THREE.MeshStandardMaterial({ roughness: 0.45, transparent: true, clippingPlanes: planes }), hs.length);
+  let bad = 0;
+  hs.forEach((h, j) => {
+    v.fromArray(h.vec).normalize(); q.setFromUnitVectors(Y, v);
+    p.set(h.x, h.y, h.z); if (h.dir === 'out') p.addScaledVector(v, -L);
+    // float it just outside the wall so the beads do not hide it
+    const rx = h.x - cx, ry = h.y - cy, rl = Math.hypot(rx, ry) || 1;
+    p.x += rx / rl * 0.45 * size; p.y += ry / rl * 0.45 * size;
+    // a seam ramp restarts each turn some mm back on purpose: that flag alone is not a fault
+    const flagged = h.flags.some(f => f !== RAMP_FLAG); if (flagged) bad++;
+    arrows.setMatrixAt(j, m.compose(p, q, sc));
+    arrows.setColorAt(j, new THREE.Color(flagged ? BAD_COL : h.radial === 'out' ? OUT_COL : IN_COL));
+  });
+  arrows.frustumCulled = false; arrows.renderOrder = 6; scene.add(arrows);
+  const sw = c => `<i style="background:#${c.toString(16).padStart(6, '0')}"></i>`;
+  $('hopkey').innerHTML = `<label>${sw(OUT_COL)} heading outward</label><label>${sw(IN_COL)} heading inward</label><label>${sw(BAD_COL)} flagged (${bad} of ${hs.length})</label>`;
+}
+
 // ---- beads: each unbroken run of extruding moves swept as one rounded solid -----------------
 let D = null, S = null, N = 0, groups = [], box = new THREE.Box3(), centre = new THREE.Vector3();
 
@@ -352,6 +387,7 @@ function load(data) {
   $('groups').innerHTML = groups.map((g, j) => `<label><input type="checkbox" id="g${j}" ${g.on ? 'checked' : ''}> <i style="background:#${g.hex.toString(16).padStart(6, '0')}"></i>${g.name} <input type="range" id="o${j}" min="0" max="1" step="0.02" value="1"></label>`).join('');
   groups.forEach((g, j) => { $('g' + j).oninput = $('o' + j).oninput = apply; });
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
+  buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
   $('status').textContent = `${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
@@ -373,11 +409,12 @@ function start() {
   key.target.position.copy(centre); key.position.set(centre.x - r * 1.1, centre.y - r * 1.6, centre.z + r * 2.2);
   const sc = key.shadow.camera; sc.left = sc.bottom = -r * 0.9; sc.right = sc.top = r * 0.9; sc.near = r * 0.5; sc.far = r * 6; sc.updateProjectionMatrix();
   rim.target.position.copy(centre); rim.position.set(centre.x + r * 2, centre.y + r * 1.5, centre.z + r * 0.8);
-  for (const id of ['blend', 'show_model', 'op_model', 'zmax', 'section', 'expo', 'ao', 'gloss', 'light_bg']) {
+  for (const id of ['blend', 'show_model', 'op_model', 'show_hops', 'hsize', 'zmax', 'section', 'expo', 'ao', 'gloss', 'light_bg']) {
     if (Q.has(id)) { const e = $(id); if (e.type === 'checkbox') e.checked = Q.get(id) === '1'; else e.value = Q.get(id); }
     $(id).addEventListener('input', apply);
   }
   groups.forEach((g, j) => { if (Q.has('o' + j)) $('o' + j).value = Q.get('o' + j); if (Q.has('g' + j)) $('g' + j).checked = Q.get('g' + j) === '1'; });
+  if (Q.has('hsize')) buildArrows();
   if (Q.get('ui') === '0') $('ui').style.display = 'none';
   fit();
   if (Q.has('cam')) { const c = Q.get('cam').split(',').map(Number); rv.cam(...c); }
@@ -420,6 +457,10 @@ function apply() {
   });
   if (model) model.material.clippingPlanes = planes;
   gtao.normalMaterial.clippingPlanes = planes;
+  if (arrows) {      // the arrows belong to the gcode end: they fade in with the strategy colours
+    arrows.visible = $('show_hops').checked && U.mix.value > 0.01;
+    arrows.material.opacity = U.mix.value; arrows.material.depthWrite = U.mix.value > 0.99; arrows.material.clippingPlanes = planes;
+  }
   gtao.blendIntensity = +$('ao').value; gtao.enabled = !$('section').checked;   // AO reads the cut faces wrongly: off in section
   renderer.toneMappingExposure = +$('expo').value;
   const light = $('light_bg').checked;
@@ -440,8 +481,8 @@ addEventListener('keydown', e => {
   if (e.key === 'c') {
     const p = camera.position, q = lookPoint(), u = new URL(location.href);
     u.searchParams.set('cam', [p.x, p.y, p.z, q.x, q.y, q.z].map(x => x.toFixed(2)).join(','));
-    for (const id of ['blend', 'zmax', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
-    for (const id of ['section', 'light_bg']) u.searchParams.set(id, $(id).checked ? '1' : '0');
+    for (const id of ['blend', 'zmax', 'hsize', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
+    for (const id of ['section', 'light_bg', 'show_hops']) u.searchParams.set(id, $(id).checked ? '1' : '0');
     history.replaceState(null, '', u);
   }
 });

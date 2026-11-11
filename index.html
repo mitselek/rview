@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.5 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.6 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -97,10 +97,11 @@ const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
 // the parts that ship with the page; ?part=<key> picks one, ?file=&stl= loads anything else
 const PARTS = {
+  m3u35: { label: 'S2 roller, foot compensated (M3U35)', flip: 0 },
   m3u34: { label: 'S2 roller, chamfered (M3U34)', flip: 0 },
   m3u31: { label: 'S2 roller (M3U31)', flip: 1 },
 };
-const PART = Q.has('file') ? null : (Q.get('part') in PARTS ? Q.get('part') : 'm3u34');
+const PART = Q.has('file') ? null : (Q.get('part') in PARTS ? Q.get('part') : 'm3u35');
 if (PART) { Q.set('file', `data/${PART}.json`); Q.set('stl', `data/${PART}.stl`); Q.set('flip', String(PARTS[PART].flip)); }
 const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
   'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
@@ -600,7 +601,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.5 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.6 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

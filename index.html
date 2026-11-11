@@ -19,6 +19,23 @@
   #status { color: #fc6; font-size: 11px; white-space: pre-wrap; }
   #blend { width: 100%; }
   #vig { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(0,0,0,.42) 100%); }
+  #tt { position: absolute; right: 0; top: 0; bottom: 0; width: 220px; z-index: 2; pointer-events: none; user-select: none; -webkit-user-select: none; }
+  #tt .track { background: #ffffff26; border-radius: 6px; pointer-events: auto; touch-action: none; cursor: ns-resize; }
+  #tt .h { position: absolute; left: 50%; transform: translate(-50%, -50%); background: #9cf; border-radius: 4px; pointer-events: none; }
+  #tabs { position: absolute; right: 14px; top: 30px; bottom: 30px; width: 8px; }
+  #tabs .h { width: 24px; height: 10px; }
+  #ttop, #tbot { position: absolute; right: 8px; font-size: 11px; color: #aaa; }
+  #ttop { top: 9px; } #tbot { bottom: 9px; }
+  #tread { position: absolute; right: 34px; text-align: right; font: 11px/1.3 ui-monospace, monospace; color: #fff; white-space: pre; transform: translateY(-50%); text-shadow: 0 0 3px #000, 0 0 6px #000; }
+  #jogs { position: absolute; right: 124px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 11px; color: #bbb; background: #23262cb8; padding: 8px 10px; border-radius: 8px; }
+  #jogs .track { position: relative; width: 22px; }
+  #jogs .track::after { content: ''; position: absolute; left: -4px; right: -4px; top: 50%; height: 1px; background: #ffffff66; }
+  #jogs .h { width: 30px; height: 12px; }
+  #tjog { height: 170px; } #jogs .mini { height: 76px; }
+  #follow { pointer-events: auto; background: #333; color: #ddd; border: 1px solid #555; border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+  #follow.on { background: #2b6cb0; border-color: #9cf; color: #fff; }
+  #fades { display: flex; gap: 14px; } #fades > div { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  #fprof_v { width: 40px; height: 20px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -29,6 +46,20 @@
 </head>
 <body>
 <div id="vig"></div>
+<div id="tt">
+  <div id="ttop"></div><div id="tbot">0:00</div>
+  <div id="tabs" class="track" title="print time: the top shows the whole print"><div class="h"></div></div>
+  <div id="tread"></div>
+  <div id="jogs">
+    <span>time</span>
+    <div id="tjog" class="track" title="hold off-centre to travel in time"><div class="h"></div></div>
+    <button id="follow" title="keep the view on the nozzle">follow</button>
+    <div id="fades">
+      <div><span>length</span><div id="flen" class="track mini" title="how far in time the beads stay visible"><div class="h"></div></div><span id="flen_v"></span></div>
+      <div><span>profile</span><div id="fprof" class="track mini" title="soft falloff or sharp edge"><div class="h"></div></div><canvas id="fprof_v" width="80" height="40"></canvas></div>
+    </div>
+  </div>
+</div>
 <div id="ui">
   <h3>Model &harr; print &harr; gcode</h3>
   <input type="range" id="blend" min="0" max="1" step="0.005" value="0">
@@ -97,13 +128,38 @@ const secPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let planes = [zPlane];
 const U = { mix: { value: 0 } };
 
-function plastic(vertexColors) {
+// ---- time: every bead vertex knows when it was laid (attribute tm, seconds; < 0 = timeless). With "now" set,
+// a bead is present near now and fades away from it in time, past and future alike, down to a faint ghost.
+const TU = { now: { value: 0 }, len: { value: 12 }, prof: { value: 0.5 }, ghost: { value: 0.022 }, on: { value: 0 } };
+const T_FRAG = `varying float vTm;
+uniform float uNow, uLen, uProf, uGhost, uTimeOn;
+float presence() {      // 1 on the plateau around now, 0 from the fade length on
+  if (uTimeOn < 0.5 || vTm < 0.0) return 1.0;
+  float x = clamp((1.0 - abs(vTm - uNow) / uLen) / max(1.0 - uProf, 0.02), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+void main() {
+`;
+function timed(sh, body) {       // body runs first in the fragment's main
+  sh.uniforms.uNow = TU.now; sh.uniforms.uLen = TU.len; sh.uniforms.uProf = TU.prof; sh.uniforms.uGhost = TU.ghost; sh.uniforms.uTimeOn = TU.on;
+  sh.vertexShader = sh.vertexShader.replace('void main() {', 'attribute float tm;\nvarying float vTm;\nvoid main() {\n  vTm = tm;');
+  sh.fragmentShader = sh.fragmentShader.replace('void main() {', T_FRAG + body);
+}
+// the solid pass keeps a bead by a screen dither of its presence (no sorting needed); the ghost pass lays the rest faintly
+const SOLID = 'float pres = presence(); if (pres < 1.0 && pres <= ign(gl_FragCoord.xy)) discard;';
+const GHOST = 'float pres = presence(); if (pres >= 1.0) discard;';
+const HALF = 'if (presence() < 0.5) discard;';          // shadows, AO and arrows: there or not
+
+function plastic(vertexColors, ghost = false) {
   const m = new THREE.MeshPhysicalMaterial({ color: PLASTIC, roughness: 0.32, metalness: 0, clearcoat: 0.35, clearcoatRoughness: 0.3,
-    vertexColors, clippingPlanes: planes, clipShadows: true, side: THREE.DoubleSide });
+    vertexColors, clippingPlanes: planes, clipShadows: true, side: ghost ? THREE.FrontSide : THREE.DoubleSide, transparent: ghost, depthWrite: !ghost });
+  if (ghost) m.defines = { ...m.defines, GHOST_PASS: '' };
   m.onBeforeCompile = sh => {
     sh.uniforms.uMix = U.mix;
+    timed(sh, ghost ? GHOST : SOLID);
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uMix;')
-      .replace('#include <color_fragment>', vertexColors ? 'diffuseColor.rgb = mix(diffuseColor.rgb, vColor.rgb, uMix);' : '')
+      .replace('#include <color_fragment>', (vertexColors ? 'diffuseColor.rgb = mix(diffuseColor.rgb, vColor.rgb, uMix);' : '') + (ghost ? '\ndiffuseColor.a *= uGhost * (1.0 - pres);' : ''))
       // the inside of a cut solid shows flat, like a sawn face
       .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (!gl_FrontFacing) gl_FragColor.rgb = diffuseColor.rgb * 0.8;');
   };
@@ -121,7 +177,13 @@ composer.addPass(new OutputPass());
 // the glass model must not shade the beads under it: leave it out of the AO buffer while it is see-through
 let model = null;
 const aoHide = gtao.overrideVisibility.bind(gtao);
-gtao.overrideVisibility = () => { aoHide(); ground.visible = false; if (model && model.material.opacity < 0.99) model.visible = false; };
+gtao.overrideVisibility = () => {
+  aoHide(); ground.visible = marker.visible = false; groups.forEach(g => { g.ghost.visible = false; });
+  if (model && model.material.opacity < 0.99) model.visible = false;
+};
+gtao.normalMaterial.onBeforeCompile = sh => timed(sh, HALF);
+const shadowMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+shadowMat.onBeforeCompile = sh => timed(sh, HALF);
 
 
 // ---- navigation: turn around the grabbed point, up stays up -------------------------------------
@@ -134,8 +196,8 @@ const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPack
 // the surface point under a screen pixel (one 1 x 1 depth render), or null over empty space
 function pick(cx, cy) {
   const w = canvas.clientWidth, h = canvas.clientHeight;
-  const keep = [ground.visible, axes.visible, model ? model.visible : false, scene.background];
-  ground.visible = axes.visible = false; if (model && model.material.opacity < 0.5) model.visible = false;
+  const keep = [ground.visible, axes.visible, model ? model.visible : false, scene.background, marker.visible];
+  ground.visible = axes.visible = marker.visible = false; if (model && model.material.opacity < 0.5) model.visible = false;
   scene.background = null; scene.overrideMaterial = depthMat; depthMat.clippingPlanes = planes;
   camera.setViewOffset(w, h, cx, cy, 1, 1);
   const col = renderer.getClearColor(new THREE.Color()), al = renderer.getClearAlpha();
@@ -143,7 +205,7 @@ function pick(cx, cy) {
   renderer.readRenderTargetPixels(pickRT, 0, 0, 1, 1, pickBuf);
   renderer.setRenderTarget(null); renderer.setClearColor(col, al);
   camera.clearViewOffset(); scene.overrideMaterial = null;
-  [ground.visible, axes.visible] = keep; if (model) model.visible = keep[2]; scene.background = keep[3];
+  [ground.visible, axes.visible] = keep; if (model) model.visible = keep[2]; scene.background = keep[3]; marker.visible = keep[4];
   const d = 255 / 256 * (pickBuf[0] / 255 / 16777216 + pickBuf[1] / 255 / 65536 + pickBuf[2] / 255 / 256 + pickBuf[3] / 255);
   if (d >= 0.99999) return null;
   camera.updateMatrixWorld();
@@ -249,7 +311,86 @@ function hairlines(depthTest, alpha) {
 }
 const axes = new THREE.Group(); axes.add(hairlines(true, 1), hairlines(false, 0.22)); scene.add(axes);
 const origin = new THREE.Vector3();
+
+// ---- "now": a marker at the nozzle's spot, the absolute slider, the jogs
+const marker = (() => {      // a cone standing on its tip at the nozzle point
+  const g = new THREE.ConeGeometry(0.28, 1, 20); g.translate(0, -0.5, 0); g.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xfff2a8, transparent: true, opacity: 0.92, depthTest: false, depthWrite: false }));
+  m.renderOrder = 30; m.visible = false; m.frustumCulled = false; scene.add(m); return m;
+})();
+let tEnd = null, total = 0, now = null, follow = false;
+const nowPos = new THREE.Vector3();
+function segAt(t) { let lo = 0, hi = N - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (tEnd[mid] < t) lo = mid + 1; else hi = mid; } return lo; }
+function posAt(t, out) {
+  const i = segAt(t), t0 = i ? tEnd[i - 1] : 0, d = tEnd[i] - t0, k = d > 0 ? (t - t0) / d : 1;
+  out.set(S.x0[i] + (S.x1[i] - S.x0[i]) * k, S.y0[i] + (S.y1[i] - S.y0[i]) * k, S.z0[i] + (S.z1[i] - S.z0[i]) * k); return i;
+}
+const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+// a vertical track with a handle; spring: it returns to the centre when released (a jog)
+function track(id, spring, on) {
+  const el = $(id), h = el.querySelector('.h'); let f = spring ? 0.5 : 1, held = false;
+  const place = () => { h.style.top = (1 - f) * 100 + '%'; };
+  const drag = e => { const r = el.getBoundingClientRect(); f = Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height)); place(); on?.(f); };
+  el.addEventListener('pointerdown', e => { try { el.setPointerCapture(e.pointerId); } catch { /* synthetic */ } held = true; drag(e); e.preventDefault(); });
+  el.addEventListener('pointermove', e => { if (held) drag(e); });
+  const up = () => { if (!held) return; held = false; if (spring) { f = 0.5; place(); } };
+  el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  place();
+  return { get f() { return f; }, get held() { return held; }, get u() { return held ? (f - 0.5) * 2 : 0; }, set(v) { f = v; place(); } };
+}
+const tabs = track('tabs', false, f => setNow(f >= 0.995 ? null : f * total));
+const tjog = track('tjog', true), flen = track('flen', true), fprof = track('fprof', true);
+function setNow(t) {          // null: the whole print, no time effect
+  const was = now !== null;
+  if (t === null || !total) { now = null; TU.on.value = 0; }
+  else {
+    now = Math.min(Math.max(t, 0), total * 0.9999);
+    const prev = nowPos.clone(), i = posAt(now, nowPos);
+    TU.on.value = 1; TU.now.value = now;
+    if (follow && was) {        // slide the view with the nozzle: same angle, same zoom
+      const d = nowPos.clone().sub(prev); camera.position.add(d); pivot.copy(nowPos);
+      if (glide) { glide.from.add(d); glide.to.add(d); }
+    }
+    marker.position.copy(nowPos);
+    $('tread').textContent = `${fmt(now)}\nz ${nowPos.z.toFixed(2)}\nline ${S.line[i]}`;
+  }
+  if (now === null) $('tread').textContent = '';
+  const f = now === null ? 1 : now / total;
+  if (!tabs.held) tabs.set(f);
+  const r = $('tabs').getBoundingClientRect(); $('tread').style.top = r.top + (1 - (tabs.held ? tabs.f : f)) * r.height + 'px';
+  if (D) apply();
+}
+function fadeUI() {
+  const L = TU.len.value, p = TU.prof.value, c = $('fprof_v'), g = c.getContext('2d');
+  $('flen_v').textContent = (L < 10 ? L.toFixed(1) : L.toFixed(0)) + ' s';
+  g.clearRect(0, 0, c.width, c.height); g.strokeStyle = '#9cf'; g.lineWidth = 3; g.beginPath();
+  for (let x = 0; x <= c.width; x += 2) {
+    const d = Math.abs(x / c.width * 2 - 1), k = Math.min(1, Math.max(0, (1 - d) / Math.max(1 - p, 0.02))), y = k * k * (3 - 2 * k);
+    g[x ? 'lineTo' : 'moveTo'](x, c.height - 3 - y * (c.height - 6));
+  }
+  g.stroke();
+}
+$('follow').addEventListener('click', () => {
+  follow = !follow; $('follow').classList.toggle('on', follow);
+  if (follow && now !== null) focus(nowPos);
+});
+let lastTick = performance.now();
+function jogs() {
+  const t = performance.now(), dt = Math.min(0.1, (t - lastTick) / 1000); lastTick = t;
+  if (now === null) return;
+  const dead = 0.06, a = Math.max(0, (Math.abs(tjog.u) - dead) / (1 - dead));
+  // from a 50x slow-motion creep at the centre to the whole print in about six seconds at the end stop
+  if (a > 0) setNow(now + Math.sign(tjog.u) * 0.02 * Math.pow(total / 6 / 0.02, a) * dt);
+  if (Math.abs(flen.u) > dead || Math.abs(fprof.u) > dead) {
+    if (Math.abs(flen.u) > dead) TU.len.value = Math.min(total, Math.max(0.3, TU.len.value * Math.exp(flen.u * 1.6 * dt)));
+    if (Math.abs(fprof.u) > dead) TU.prof.value = Math.min(0.98, Math.max(0, TU.prof.value + fprof.u * 0.7 * dt));
+    fadeUI(); key.shadow.needsUpdate = true; dirty = Math.max(dirty, 2);
+  }
+}
+
 function tick() {
+  jogs();
+  if (now !== null) marker.scale.setScalar(Math.max(depthOf(nowPos), camera.near) * 0.035);
   if (glide) {
     const t = Math.min(1, (performance.now() - glide.t0) / 260), e = t * t * (3 - 2 * t);
     camera.position.lerpVectors(glide.from, glide.to, e); dirty = 2; if (t >= 1) glide = null;
@@ -274,7 +415,13 @@ function buildArrows() {
   if (!hs.length) { $('hopkey').textContent = 'no hops in this file'; return; }
   const size = +$('hsize').value, L = 0.8 * size, [cx, cy] = D.meta.centre;
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), p = new THREE.Vector3(), sc = new THREE.Vector3(L, L, L), Y = new THREE.Vector3(0, 1, 0);
-  arrows = new THREE.InstancedMesh(ARROW, new THREE.MeshStandardMaterial({ roughness: 0.45, transparent: true, clippingPlanes: planes }), hs.length);
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.45, transparent: true, clippingPlanes: planes });
+  mat.onBeforeCompile = sh => timed(sh, HALF);
+  // an arrow lives at the time of the bead it belongs to (found by gcode line)
+  const when = new Float32Array(hs.length);
+  hs.forEach((h, j) => { let lo = 0, hi = N - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (S.line[mid] < h.bead.line) lo = mid + 1; else hi = mid; } when[j] = tEnd[lo]; });
+  ARROW.setAttribute('tm', new THREE.InstancedBufferAttribute(when, 1));
+  arrows = new THREE.InstancedMesh(ARROW, mat, hs.length);
   let bad = 0;
   hs.forEach((h, j) => {
     v.fromArray(h.vec).normalize(); q.setFromUnitVectors(Y, v);
@@ -320,11 +467,11 @@ const CAPS = [[0.5, 0.866], [0.0, 1.0]];   // end caps: [scale across, push alon
 function sweep(list, col, h) {
   let nr = 0, nq = 0;
   for (const r of list) { nr += r.segs.length + 1 + 2 * CAPS.length; nq += r.segs.length + 2 * CAPS.length; }
-  const pos = new Float32Array(nr * RING * 3), nor = new Float32Array(nr * RING * 3), colr = new Float32Array(nr * RING * 3);
+  const pos = new Float32Array(nr * RING * 3), nor = new Float32Array(nr * RING * 3), colr = new Float32Array(nr * RING * 3), tms = new Float32Array(nr * RING);
   const idx = new Uint32Array(nq * RING * 6);
   let v = 0, t = 0;
   const T = new THREE.Vector3(), Sd = new THREE.Vector3(), Up = new THREE.Vector3(), d0 = new THREE.Vector3(), d1 = new THREE.Vector3(), Z = new THREE.Vector3(0, 0, 1);
-  const ring = (px, py, pz, w, across, along, mitre, c) => {
+  const ring = (px, py, pz, w, across, along, mitre, c, tm) => {
     // one section ring at p (the nozzle point: the bead hangs h below it), scaled across, leaning along T
     const rx = Math.min(w, h) / 2, cx = Math.max(0, (w - h) / 2), nl = Math.hypot(across, along) || 1;
     for (let k = 0; k < RING; k++) {
@@ -332,7 +479,7 @@ function sweep(list, col, h) {
       pos[v] = px + Sd.x * u + Up.x * vv; pos[v + 1] = py + Sd.y * u + Up.y * vv; pos[v + 2] = pz - h / 2 + Sd.z * u + Up.z * vv;
       const nx = CA[k] * across / nl, nz = SA[k] * across / nl, na = along / nl;
       nor[v] = Sd.x * nx + Up.x * nz + T.x * na; nor[v + 1] = Sd.y * nx + Up.y * nz + T.y * na; nor[v + 2] = Sd.z * nx + Up.z * nz + T.z * na;
-      colr[v] = c.r; colr[v + 1] = c.g; colr[v + 2] = c.b; v += 3;
+      colr[v] = c.r; colr[v + 1] = c.g; colr[v + 2] = c.b; tms[v / 3] = tm; v += 3;
     }
   };
   for (const r of list) {
@@ -348,12 +495,13 @@ function sweep(list, col, h) {
       const mitre = Math.min(2, 1 / Math.max(0.5, T.dot(d1)));
       const wj = j === 0 ? w(0) : j === n ? w(n - 1) : (w(j - 1) + w(j)) / 2;
       const px = j < n ? S.x0[b] : S.x1[a], py = j < n ? S.y0[b] : S.y1[a], pz = j < n ? S.z0[b] : S.z1[a];
+      const tj = j < n ? (b ? tEnd[b - 1] : 0) : tEnd[a];
       if (j === 0) for (let m = CAPS.length - 1; m >= 0; m--) {
-        const o = CAPS[m][1] * wj / 2; ring(px - T.x * o, py - T.y * o, pz - T.z * o, wj, Math.max(CAPS[m][0], 0.02), -CAPS[m][1], 1, col);
+        const o = CAPS[m][1] * wj / 2; ring(px - T.x * o, py - T.y * o, pz - T.z * o, wj, Math.max(CAPS[m][0], 0.02), -CAPS[m][1], 1, col, tj);
       }
-      ring(px, py, pz, wj, 1, 0, mitre, col);
+      ring(px, py, pz, wj, 1, 0, mitre, col, tj);
       if (j === n) for (let m = 0; m < CAPS.length; m++) {
-        const o = CAPS[m][1] * wj / 2; ring(px + T.x * o, py + T.y * o, pz + T.z * o, wj, Math.max(CAPS[m][0], 0.02), CAPS[m][1], 1, col);
+        const o = CAPS[m][1] * wj / 2; ring(px + T.x * o, py + T.y * o, pz + T.z * o, wj, Math.max(CAPS[m][0], 0.02), CAPS[m][1], 1, col, tj);
       }
     }
     const rings = v / 3 / RING - base / RING;
@@ -366,12 +514,20 @@ function sweep(list, col, h) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   g.setAttribute('color', new THREE.BufferAttribute(colr, 3));
+  g.setAttribute('tm', new THREE.BufferAttribute(tms, 1));
   g.setIndex(new THREE.BufferAttribute(idx.subarray(0, t), 1));
   return g;
 }
 
 function load(data) {
   D = data; S = data.seg; N = data.meta.count;
+  // when each move ends, from its own feed rate (no acceleration, no heating: a little under the slicer's estimate)
+  tEnd = new Float64Array(N); total = 0;
+  for (let i = 0; i < N; i++) {
+    const v = S.f[i] / 60, len = S.kind[i] === 2 ? Math.abs(S.e[i]) : Math.hypot(S.x1[i] - S.x0[i], S.y1[i] - S.y0[i], S.z1[i] - S.z0[i]);
+    if (v > 0) total += len / v; tEnd[i] = total;
+  }
+  $('ttop').textContent = fmt(total);
   const all = runs(), h = D.meta.height;
   let tris = 0;
   for (const name of Object.keys(all).sort((a, b) => (a === 'sps skin' ? -1 : b === 'sps skin' ? 1 : a.localeCompare(b)))) {
@@ -379,10 +535,12 @@ function load(data) {
     const geo = sweep(all[name], new THREE.Color(hex), h);
     const mesh = new THREE.Mesh(geo, plastic(true));
     mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false;
-    scene.add(mesh); tris += geo.index.count / 3;
+    mesh.customDepthMaterial = shadowMat;
+    const ghost = new THREE.Mesh(geo, plastic(true, true)); ghost.frustumCulled = false; ghost.visible = false; ghost.renderOrder = 4;
+    scene.add(mesh, ghost); tris += geo.index.count / 3;
     const on = name !== 'Custom';
     if (on) { geo.computeBoundingBox(); box.union(geo.boundingBox); }
-    groups.push({ name, mesh, hex, on });
+    groups.push({ name, mesh, ghost, hex, on });
   }
   $('groups').innerHTML = groups.map((g, j) => `<label><input type="checkbox" id="g${j}" ${g.on ? 'checked' : ''}> <i style="background:#${g.hex.toString(16).padStart(6, '0')}"></i>${g.name} <input type="range" id="o${j}" min="0" max="1" step="0.02" value="1"></label>`).join('');
   groups.forEach((g, j) => { $('g' + j).oninput = $('o' + j).oninput = apply; });
@@ -395,6 +553,7 @@ function load(data) {
     geo = toCreasedNormals(geo, Math.PI / 5);
     geo.computeBoundingBox();
     const c = geo.boundingBox.getCenter(new THREE.Vector3());
+    geo.setAttribute('tm', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count).fill(-1), 1));   // timeless
     model = new THREE.Mesh(geo, plastic(false));
     if (Q.get('flip') === '1') { geo.rotateX(Math.PI); geo.computeBoundingBox(); geo.boundingBox.getCenter(c); }   // printed upside down
     model.position.set(centre.x - c.x, centre.y - c.y, -geo.boundingBox.min.z);
@@ -415,10 +574,14 @@ function start() {
   }
   groups.forEach((g, j) => { if (Q.has('o' + j)) $('o' + j).value = Q.get('o' + j); if (Q.has('g' + j)) $('g' + j).checked = Q.get('g' + j) === '1'; });
   if (Q.has('hsize')) buildArrows();
-  if (Q.get('ui') === '0') $('ui').style.display = 'none';
+  if (Q.get('ui') === '0') rv.ui(false);
+  if (Q.has('fade')) TU.len.value = +Q.get('fade');
+  if (Q.has('prof')) TU.prof.value = +Q.get('prof');
+  if (Q.get('follow') === '1') { follow = true; $('follow').classList.add('on'); }
+  fadeUI();
   fit();
   if (Q.has('cam')) { const c = Q.get('cam').split(',').map(Number); rv.cam(...c); }
-  apply();
+  setNow(Q.has('now') ? +Q.get('now') : null);
   let frames = 0;
   (function loop() {
     requestAnimationFrame(loop); tick();
@@ -454,6 +617,8 @@ function apply() {
     g.mesh.visible = $('g' + j).checked && op > 0.004 && (t > 0.001 || !model || !$('show_model').checked);
     setOpacity(g.mesh.material, op); g.mesh.castShadow = op > 0.5;
     g.mesh.material.roughness = Math.max(0.05, rough); g.mesh.material.clippingPlanes = planes;
+    g.ghost.visible = g.mesh.visible && now !== null; g.ghost.material.opacity = op;
+    g.ghost.material.roughness = Math.max(0.05, rough); g.ghost.material.clippingPlanes = planes;
   });
   if (model) model.material.clippingPlanes = planes;
   gtao.normalMaterial.clippingPlanes = planes;
@@ -461,6 +626,7 @@ function apply() {
     arrows.visible = $('show_hops').checked && U.mix.value > 0.01;
     arrows.material.opacity = U.mix.value; arrows.material.depthWrite = U.mix.value > 0.99; arrows.material.clippingPlanes = planes;
   }
+  marker.visible = now !== null; $('jogs').style.display = now === null ? 'none' : '';
   gtao.blendIntensity = +$('ao').value; gtao.enabled = !$('section').checked;   // AO reads the cut faces wrongly: off in section
   renderer.toneMappingExposure = +$('expo').value;
   const light = $('light_bg').checked;
@@ -482,12 +648,14 @@ addEventListener('keydown', e => {
     const p = camera.position, q = lookPoint(), u = new URL(location.href);
     u.searchParams.set('cam', [p.x, p.y, p.z, q.x, q.y, q.z].map(x => x.toFixed(2)).join(','));
     for (const id of ['blend', 'zmax', 'hsize', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
+    if (now === null) u.searchParams.delete('now'); else u.searchParams.set('now', now.toFixed(2));
+    u.searchParams.set('fade', TU.len.value.toFixed(2)); u.searchParams.set('prof', TU.prof.value.toFixed(2)); u.searchParams.set('follow', follow ? '1' : '0');
     for (const id of ['section', 'light_bg', 'show_hops']) u.searchParams.set(id, $(id).checked ? '1' : '0');
     history.replaceState(null, '', u);
   }
 });
 addEventListener('resize', () => {
-  dirty = 4;
+  dirty = 4; if (D) setNow(now);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
 });
@@ -496,7 +664,9 @@ window.rv = {
   cam(px, py, pz, tx, ty, tz) { camera.position.set(px, py, pz); camera.lookAt(tx, ty, tz); pivot.set(tx, ty, tz); dirty = 6; },
   // look at a point from an azimuth/elevation (deg) and distance (mm)
   look(tx, ty, tz, az, el, dist) { const a = az * Math.PI / 180, e = el * Math.PI / 180; this.cam(tx + dist * Math.cos(e) * Math.cos(a), ty + dist * Math.cos(e) * Math.sin(a), tz + dist * Math.sin(e), tx, ty, tz); },
-  ui(on) { $('ui').style.display = on ? '' : 'none'; },
+  ui(on) { $('ui').style.display = $('tt').style.display = on ? '' : 'none'; },
+  time(t) { setNow(t); }, fade(len, prof) { TU.len.value = len; TU.prof.value = prof; fadeUI(); apply(); }, get total() { return total; }, get now() { return now; },
+  follow(on) { if (on !== follow) $('follow').click(); },
   gl() { const g = renderer.getContext(), x = g.getExtension('WEBGL_debug_renderer_info'); return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'unknown'; },
   centre, box, groups, pick, pivot, THREE, renderer, scene, key, rim, ground, gtao, camera, get model() { return model; },
 };

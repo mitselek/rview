@@ -13,6 +13,13 @@ Live: <https://mitselek.github.io/rview/>
   half section.
 - Hop arrows at the gcode end: where the strand is cut (the arrow's tip at the cut) and where it
   starts again (its tail there); green heading outward, magenta inward, red flagged.
+- Time travel, on the right edge: a slider from zero (bottom) to the total print time (top). At the
+  very top the whole print shows. Anywhere else a marker stands on the nozzle's spot at "now", the
+  beads laid around that moment show fully and the rest fade, into the past and the future alike,
+  down to a faint ghost. Beside it are jogs, controls that spring back to the centre and change a
+  value while held off-centre: one travels in time (a slow creep near the centre, the whole print
+  in seconds at the end stop), two set the fade's length and its profile (soft falloff to sharp
+  edge). A switch makes the view follow the nozzle. The jogs and the switch hide at the top.
 - Navigation: drag turns around the point you grab (up stays up), right-drag or shift-drag pans,
   the wheel zooms to the pointer, double-click centres a spot, `f` fits the part, `c` copies the
   view into the address bar. Axis hairlines (x red, y green, z blue) cross at the turning point
@@ -29,8 +36,10 @@ plus `meta.height` (layer height), `meta.count`, `meta.centre` and the `hops` li
 `vec`, `radial`, `flags`). The extractor that writes it is not in this
 repository yet.
 
-## Limits (v0.1)
+## Limits
 
+- Time comes from each move's own feed rate: no acceleration and no heating, so the total is a
+  little under the slicer's estimate.
 - Beads are drawn exactly as the gcode says: round and unfused. A real print's surface is
   flatter than this.
 - The section's cut faces are a shading trick, not real caps.

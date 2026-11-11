@@ -23,8 +23,8 @@ Live: <https://mitselek.github.io/rview/>
 - Navigation: drag turns around the point you grab (up stays up), right-drag or shift-drag pans,
   the wheel zooms to the pointer, double-click centres a spot, `f` fits the part, `c` copies the
   view into the address bar. Axis hairlines (x red, y green, z blue), each with an arrowhead
-  and its letter on the positive side, cross at the turning point while you turn and sit at the
-  part's origin at rest.
+  on its positive side and its letter on the negative, cross at the turning point while you turn
+  and sit at the part's origin at rest; they are true in space, so the part hides what lies behind it.
 
 ## Data
 

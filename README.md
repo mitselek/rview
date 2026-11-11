@@ -22,8 +22,9 @@ Live: <https://mitselek.github.io/rview/>
   edge). A switch makes the view follow the nozzle. The jogs and the switch hide at the top.
 - Navigation: drag turns around the point you grab (up stays up), right-drag or shift-drag pans,
   the wheel zooms to the pointer, double-click centres a spot, `f` fits the part, `c` copies the
-  view into the address bar. Axis hairlines (x red, y green, z blue) cross at the turning point
-  while you turn and sit at the part's origin at rest.
+  view into the address bar. Axis hairlines (x red, y green, z blue), each with an arrowhead
+  and its letter on the positive side, cross at the turning point while you turn and sit at the
+  part's origin at rest.
 
 ## Data
 

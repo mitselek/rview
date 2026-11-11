@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.2 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.3 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -178,7 +178,7 @@ composer.addPass(new OutputPass());
 let model = null;
 const aoHide = gtao.overrideVisibility.bind(gtao);
 gtao.overrideVisibility = () => {
-  aoHide(); ground.visible = marker.visible = false; groups.forEach(g => { g.ghost.visible = false; });
+  aoHide(); ground.visible = marker.visible = axes.visible = false; groups.forEach(g => { g.ghost.visible = false; });
   if (model && model.material.opacity < 0.99) model.visible = false;
 };
 gtao.normalMaterial.onBeforeCompile = sh => timed(sh, HALF);
@@ -302,7 +302,8 @@ function hairlines(depthTest, alpha) {
   const pos = [], col = [], C = [[1, 0.25, 0.22], [0.3, 0.95, 0.3], [0.35, 0.6, 1]], N = 24;
   for (let a = 0; a < 3; a++) for (const s of [-1, 1]) for (let i = 0; i < N; i++) {
     const t0 = i / N, t1 = (i + 1) / N, e0 = [0, 0, 0], e1 = [0, 0, 0]; e0[a] = s * t0; e1[a] = s * t1;
-    pos.push(...e0, ...e1); col.push(...C[a], alpha * (1 - t0) ** 2, ...C[a], alpha * (1 - t1) ** 2);
+    const pw = s > 0 ? 1 : 2;      // the positive half stays visible further out: it carries the arrowhead
+    pos.push(...e0, ...e1); col.push(...C[a], alpha * (1 - t0) ** pw, ...C[a], alpha * (1 - t1) ** pw);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
@@ -310,6 +311,19 @@ function hairlines(depthTest, alpha) {
   l.frustumCulled = false; l.renderOrder = depthTest ? 20 : 21; return l;
 }
 const axes = new THREE.Group(); axes.add(hairlines(true, 1), hairlines(false, 0.22)); scene.add(axes);
+// an arrowhead and a letter on each axis's positive side, halfway out, always readable
+['x', 'y', 'z'].forEach((name, a) => {
+  const hex = [0xff4038, 0x4df24d, 0x5999ff][a], dir = new THREE.Vector3().setComponent(a, 1);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.05, 16), new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false }));
+  head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir); head.position.copy(dir).multiplyScalar(0.5); head.renderOrder = 22;
+  const c = document.createElement('canvas'); c.width = c.height = 96;
+  const g = c.getContext('2d'); g.font = 'bold 72px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 8; g.strokeStyle = '#000000b0'; g.strokeText(name, 48, 50); g.fillStyle = '#' + hex.toString(16).padStart(6, '0'); g.fillText(name, 48, 50);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }));
+  label.position.copy(dir).multiplyScalar(0.585); label.scale.setScalar(0.07); label.renderOrder = 23;
+  axes.add(head, label);
+});
 const origin = new THREE.Vector3();
 
 // ---- "now": a marker at the nozzle's spot, the absolute slider, the jogs
@@ -571,7 +585,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.2 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.3 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.3 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.4 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -18,6 +18,7 @@
   #stops { display: flex; justify-content: space-between; font-size: 11px; color: #aaa; }
   #status { color: #fc6; font-size: 11px; white-space: pre-wrap; }
   #blend { width: 100%; }
+  #part { flex: 1; min-width: 0; background: #333; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 2px; }
   #vig { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(0,0,0,.42) 100%); }
   #tt { position: absolute; right: 0; top: 0; bottom: 0; width: 220px; z-index: 2; pointer-events: none; user-select: none; -webkit-user-select: none; }
   #tt .track { background: #ffffff26; border-radius: 6px; pointer-events: auto; touch-action: none; cursor: ns-resize; }
@@ -61,6 +62,7 @@
   </div>
 </div>
 <div id="ui">
+  <label>part <select id="part"></select></label>
   <h3>Model &harr; print &harr; gcode</h3>
   <input type="range" id="blend" min="0" max="1" step="0.005" value="0">
   <div id="stops"><span>model</span><span>print</span><span>gcode</span></div>
@@ -93,7 +95,13 @@ import { toCreasedNormals, mergeGeometries } from 'three/addons/utils/BufferGeom
 
 const $ = id => document.getElementById(id);
 const Q = new URLSearchParams(location.search);
-if (!Q.has('file')) { Q.set('file', 'data/m3u31.json'); Q.set('stl', 'data/m3u31.stl'); Q.set('flip', '1'); }   // the demo part
+// the parts that ship with the page; ?part=<key> picks one, ?file=&stl= loads anything else
+const PARTS = {
+  m3u34: { label: 'S2 roller, chamfered (M3U34)', flip: 0 },
+  m3u31: { label: 'S2 roller (M3U31)', flip: 1 },
+};
+const PART = Q.has('file') ? null : (Q.get('part') in PARTS ? Q.get('part') : 'm3u34');
+if (PART) { Q.set('file', `data/${PART}.json`); Q.set('stl', `data/${PART}.stl`); Q.set('flip', String(PARTS[PART].flip)); }
 const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
   'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
   'Skirt/Brim': 0x777777, 'Support material': 0x65a30d, 'Gap fill': 0xfacc15, 'Custom': 0x888888 };
@@ -311,6 +319,7 @@ function hairlines(depthTest, alpha) {
   l.frustumCulled = false; l.renderOrder = depthTest ? 20 : 21; return l;
 }
 const axes = new THREE.Group(); axes.add(hairlines(true, 1), hairlines(false, 0.22)); scene.add(axes);
+const axisTips = [];
 // an arrowhead and a letter on each axis's positive side, halfway out, always readable
 ['x', 'y', 'z'].forEach((name, a) => {
   const hex = [0xff4038, 0x4df24d, 0x5999ff][a], dir = new THREE.Vector3().setComponent(a, 1);
@@ -320,9 +329,9 @@ const axes = new THREE.Group(); axes.add(hairlines(true, 1), hairlines(false, 0.
   const g = c.getContext('2d'); g.font = 'bold 72px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.lineWidth = 8; g.strokeStyle = '#000000b0'; g.strokeText(name, 48, 50); g.fillStyle = '#' + hex.toString(16).padStart(6, '0'); g.fillText(name, 48, 50);
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }));
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false }));
   label.position.copy(dir).multiplyScalar(0.585); label.scale.setScalar(0.07); label.renderOrder = 23;
-  axes.add(head, label);
+  axes.add(head, label); axisTips.push({ head, label, dir });
 });
 const origin = new THREE.Vector3();
 
@@ -417,6 +426,12 @@ function tick() {
   // turning: the lines reach half the view from the grabbed point; resting: they span the part
   const len = turning ? Math.max(depthOf(pivot), camera.near) * Math.tan(camera.fov * Math.PI / 360) * 1.1 : box.getSize(new THREE.Vector3()).length() * 0.9;
   axes.position.copy(at); axes.scale.setScalar(len || 1);
+  // the letters keep one size on screen; an arrowhead never grows past a small share of the view
+  for (const t of axisTips) {
+    const d = Math.max(depthOf(at.clone().addScaledVector(t.dir, 0.5 * len)), camera.near);
+    t.head.scale.setScalar(Math.min(1, 0.022 * d / (0.05 * len)));
+    t.label.scale.setScalar(0.035 / len);
+  }
 }
 
 // ---- hop arrows: where the strand is cut (exit: the tip at the cut) and where it starts again (entry: the tail there)
@@ -585,7 +600,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.3 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.4 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);
@@ -708,6 +723,8 @@ window.rv = {
   gl() { const g = renderer.getContext(), x = g.getExtension('WEBGL_debug_renderer_info'); return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'unknown'; },
   centre, box, groups, pick, pivot, THREE, renderer, scene, key, rim, ground, gtao, camera, get model() { return model; },
 };
+$('part').innerHTML = Object.entries(PARTS).map(([k, v]) => `<option value="${k}" ${k === PART ? 'selected' : ''}>${v.label}</option>`).join('') + (PART ? '' : '<option selected>(from the address)</option>');
+$('part').addEventListener('change', e => { if (e.target.value in PARTS) location.search = '?part=' + e.target.value; });
 const file = Q.get('file');
 if (file) fetch(file).then(r => r.json()).then(load).catch(e => { $('status').textContent = 'load failed: ' + e; console.error(e); });
 else $('status').textContent = 'add ?file=data/x.json&stl=data/x.stl';

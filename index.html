@@ -382,7 +382,10 @@ function jogs() {
   // from a 50x slow-motion creep at the centre to the whole print in about six seconds at the end stop
   if (a > 0) setNow(now + Math.sign(tjog.u) * 0.02 * Math.pow(total / 6 / 0.02, a) * dt);
   if (Math.abs(flen.u) > dead || Math.abs(fprof.u) > dead) {
-    if (Math.abs(flen.u) > dead) TU.len.value = Math.min(total, Math.max(0.3, TU.len.value * Math.exp(flen.u * 1.6 * dt)));
+    if (Math.abs(flen.u) > dead) {      // exponential like the time jog: 3 % a second near the centre, 20x a second at the end stop
+      const k = (Math.abs(flen.u) - dead) / (1 - dead), rate = 0.03 * Math.pow(3 / 0.03, k);
+      TU.len.value = Math.min(total, Math.max(0.3, TU.len.value * Math.exp(Math.sign(flen.u) * rate * dt)));
+    }
     if (Math.abs(fprof.u) > dead) TU.prof.value = Math.min(0.98, Math.max(0, TU.prof.value + fprof.u * 0.7 * dt));
     fadeUI(); key.shadow.needsUpdate = true; dirty = Math.max(dirty, 2);
   }

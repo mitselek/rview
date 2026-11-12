@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.12 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.13 (2026-11-11): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -98,6 +98,7 @@ const Q = new URLSearchParams(location.search);
 // the parts that ship with the page; ?part=<key> picks one, ?file=&stl= loads anything else
 const PARTS = {
   m3u39: { label: 'S2 roller at the cylinders\' size (M3U39)', flip: 0 },
+  m3u40: { label: 'Plate of 2 x 2 rollers, parallel (M3U40, 37 MB)', flip: 0, color: '1f4fd8', k: 3 },
   m3u38: { label: 'Test tube, re-prime 0.8 / 0.7 / 0.6 (M3U38)', flip: 0, color: '1f4fd8' },
   m3u37: { label: 'Foot test tube 9.3 x 10 (M3U37)', flip: 0 },
   m3u36: { label: 'S2 roller, half-wave ramps inside (M3U36)', flip: 0 },
@@ -109,6 +110,7 @@ const PART = Q.has('file') ? null : (Q.get('part') in PARTS ? Q.get('part') : 'm
 if (PART) {
   Q.set('file', `data/${PART}.json`); Q.set('stl', `data/${PART}.stl`); Q.set('flip', String(PARTS[PART].flip));
   if (PARTS[PART].color && !Q.has('color')) Q.set('color', PARTS[PART].color);       // the print's own plastic colour
+  if (PARTS[PART].k && !Q.has('k')) Q.set('k', String(PARTS[PART].k));                // a big plate: coarser bead sections
 }
 const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
   'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
@@ -614,7 +616,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.12 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.13 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);

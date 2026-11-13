@@ -34,7 +34,8 @@ was put on the page (month-day hour:minute) and runs newest first (the 2 x 2 pla
 with 0.05 mm layers on its 5 degree cone; `w25r-braid` is the same race with a single-path twill
 braid as its outer rim, 52 MB, not printed yet; `w25s01` is the race's support, with its two bed
 layers pulled in against elephant foot; `w25t01` is the turning race that rides on the rollers, the
-same cone mirrored, with a pocket in its back face printed on support, 20 MB): `m3u37` (the default: a
+same cone mirrored, with a pocket in its back face printed on support, 20 MB; `w25c02` is the bearing's cage, a ring
+with 30 dome pivots printed without support in 0.1 mm layers, 21 MB): `m3u37` (the default: a
 9.3 x 10 mm test tube for the elephant-foot compensation) and four prints of a 25 mm conical roller
 with a twill skin: `m3u36` ( each cut's flow ramp one half wave long, on the
 inside of the wall), `m3u35` (the plain model, its two bottom layers pulled in against elephant foot), `m3u34` (a chamfered fat end) and `m3u31` (the first, cut on every turn). Anything else: `index.html?file=<moves.json>&stl=<part.stl>[&flip=1]`.

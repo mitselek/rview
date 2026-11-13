@@ -98,6 +98,7 @@ const Q = new URLSearchParams(location.search);
 // the parts that ship with the page; ?part=<key> picks one, ?file=&stl= loads anything else
 // at: when the part was put on the page (local time); the list shows it and runs newest first
 const PARTS = {
+  w25j01: { at: '2026-11-13 23:45', label: 'Roller-placing jig, a tube with 30 teeth (W25J01, not printed, 15 MB)', flip: 0, color: '1f4fd8', k: 3 },
   w25k01: { at: '2026-11-13 23:42', label: 'Cage spacer, two halves, 0.30 thick, an assembly jig (W25K01)', flip: 0, color: '1f4fd8' },
   'w25c-hoop': { at: '2026-11-13 23:32', label: 'Cage, step 1: the outer 3-strand braid alone, sps only (not printed, 46 MB)', flip: 0, color: '1f4fd8', k: 2 },
   w25c02: { at: '2026-11-13 23:20', label: 'Cage, 30 dome pivots, no support, 0.1 layers at the pivots (W25C02, 21 MB)', flip: 0, color: '1f4fd8', k: 3 },

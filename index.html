@@ -128,7 +128,8 @@ if (PART) {
 }
 const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
   'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
-  'Skirt/Brim': 0x777777, 'Support material': 0x65a30d, 'Gap fill': 0xfacc15, 'Custom': 0x888888 };
+  'Skirt/Brim': 0x777777, 'Support material': 0x65a30d, 'Gap fill': 0xfacc15, 'Custom': 0x888888,
+  'Doubled': 0xffffff };   // moves laid over an earlier bead at the same height, marked in the data
 const SPS_COL = 0xff8a1f;
 const PLASTIC = new THREE.Color(Q.get('color') ? '#' + Q.get('color') : 0xb30f14);
 const KS = +(Q.get('k') ?? 6);          // arc steps on each side of a bead's section

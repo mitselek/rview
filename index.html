@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.18 (2026-11-13): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.19 (2026-11-15): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -15,6 +15,11 @@
   #ui input[type=range] { flex: 1; min-width: 0; }
   #ui .v { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
   #ui i { width: 11px; height: 11px; display: inline-block; border-radius: 2px; flex: none; }
+  #head { display: flex; align-items: center; gap: 6px; }
+  #head label { flex: 1; min-width: 0; }
+  #fold { flex: none; min-width: 28px; height: 26px; background: #333; color: #ddd; border: 1px solid #555; border-radius: 3px; font: inherit; cursor: pointer; }
+  #ui.shut { width: auto; padding: 4px; overflow: hidden; }   /* collapsed: only the button is left */
+  #ui.shut > :not(#head), #ui.shut #head label { display: none; }
   #stops { display: flex; justify-content: space-between; font-size: 11px; color: #aaa; }
   #status { color: #fc6; font-size: 11px; white-space: pre-wrap; }
   #blend { width: 100%; }
@@ -62,7 +67,7 @@
   </div>
 </div>
 <div id="ui">
-  <label>part <select id="part"></select></label>
+  <div id="head"><label>part <select id="part"></select></label><button id="fold" type="button" title="hide the controls (h)">&laquo;</button></div>
   <h3>Model &harr; print &harr; gcode</h3>
   <input type="range" id="blend" min="0" max="1" step="0.005" value="0">
   <div id="stops"><span>model</span><span>print</span><span>gcode</span></div>
@@ -80,7 +85,7 @@
   <label>shadows <input type="range" id="ao" min="0" max="2" step="0.05" value="1"></label>
   <label>gloss <input type="range" id="gloss" min="0" max="1" step="0.02" value="0.68"></label>
   <label><input type="checkbox" id="light_bg"> light backdrop</label>
-  <div>drag: turn around the grabbed point. right-drag or shift-drag: pan. wheel: zoom to the pointer. double-click: centre that spot. keys: f fit, c copy view to the address bar. axes: x red, y green, z blue.</div>
+  <div>drag: turn around the grabbed point. right-drag or shift-drag: pan. wheel: zoom to the pointer. double-click: centre that spot. keys: f fit, c copy view to the address bar, h hide or show this panel. axes: x red, y green, z blue.</div>
   <div id="status">loading</div>
 </div>
 <script type="module">
@@ -633,7 +638,7 @@ function load(data) {
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.18 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.19 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);
@@ -661,6 +666,7 @@ function start() {
   groups.forEach((g, j) => { if (Q.has('o' + j)) $('o' + j).value = Q.get('o' + j); if (Q.has('g' + j)) $('g' + j).checked = Q.get('g' + j) === '1'; });
   if (Q.has('hsize')) buildArrows();
   if (Q.get('ui') === '0') rv.ui(false);
+  rv.panel(Q.get('panel') !== '0');
   if (Q.has('fade')) TU.len.value = +Q.get('fade');
   if (Q.has('prof')) TU.prof.value = +Q.get('prof');
   if (Q.get('follow') === '1') { follow = true; $('follow').classList.add('on'); }
@@ -728,8 +734,10 @@ function fit() {
   camera.lookAt(centre); pivot.copy(centre); dirty = 6;
   camera.near = r / 600; camera.far = r * 80; camera.updateProjectionMatrix();
 }
+$('fold').addEventListener('click', () => rv.panel($('ui').classList.contains('shut')));
 addEventListener('keydown', e => {
   if (e.key === 'f') fit();
+  if (e.key === 'h') rv.panel($('ui').classList.contains('shut'));
   if (e.key === 'c') {
     const p = camera.position, q = lookPoint(), u = new URL(location.href);
     u.searchParams.set('cam', [p.x, p.y, p.z, q.x, q.y, q.z].map(x => x.toFixed(2)).join(','));
@@ -737,6 +745,7 @@ addEventListener('keydown', e => {
     if (now === null) u.searchParams.delete('now'); else u.searchParams.set('now', now.toFixed(2));
     u.searchParams.set('fade', TU.len.value.toFixed(2)); u.searchParams.set('prof', TU.prof.value.toFixed(2)); u.searchParams.set('follow', follow ? '1' : '0');
     for (const id of ['section', 'light_bg', 'show_hops']) u.searchParams.set(id, $(id).checked ? '1' : '0');
+    u.searchParams.set('panel', $('ui').classList.contains('shut') ? '0' : '1');
     history.replaceState(null, '', u);
   }
 });
@@ -751,6 +760,8 @@ window.rv = {
   // look at a point from an azimuth/elevation (deg) and distance (mm)
   look(tx, ty, tz, az, el, dist) { const a = az * Math.PI / 180, e = el * Math.PI / 180; this.cam(tx + dist * Math.cos(e) * Math.cos(a), ty + dist * Math.cos(e) * Math.sin(a), tz + dist * Math.sin(e), tx, ty, tz); },
   ui(on) { $('ui').style.display = $('tt').style.display = on ? '' : 'none'; },
+  // the controls panel open or collapsed to its button (also the h key, and &panel=0 in the address)
+  panel(on) { $('ui').classList.toggle('shut', !on); $('fold').textContent = on ? '\u00ab' : '\u00bb'; $('fold').title = (on ? 'hide' : 'show') + ' the controls (h)'; },
   time(t) { setNow(t); }, fade(len, prof) { TU.len.value = len; TU.prof.value = prof; fadeUI(); apply(); }, get total() { return total; }, get now() { return now; },
   follow(on) { if (on !== follow) $('follow').click(); },
   gl() { const g = renderer.getContext(), x = g.getExtension('WEBGL_debug_renderer_info'); return x ? g.getParameter(x.UNMASKED_RENDERER_WEBGL) : 'unknown'; },

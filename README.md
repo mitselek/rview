@@ -20,6 +20,11 @@ Live: <https://mitselek.github.io/rview/>
   value while held off-centre: one travels in time (a slow creep near the centre, the whole print
   in seconds at the end stop), two set the fade's length and its profile (soft falloff to sharp
   edge). A switch makes the view follow the nozzle. The jogs and the switch hide at the top.
+- Heights can be drawn taller (`z ×`, up to 20 times) to read small steps and falls. A data file may
+  carry marks (`marks: [{a: [x,y,z], b: [x,y,z], text}]`): a dot at each end and the text once the
+  two ends stand apart on screen; with the height cut in use only the marks of the layer under it
+  show. Moves a data file names as type `Falling` (the nozzle going down) or `Doubled` get their
+  own colour and opacity slider.
 - The controls panel collapses to a single button: the `«` button at its top, the `h` key, or
   `&panel=0` in the address (`c` keeps the panel's state in the address too).
 - Navigation: drag turns around the point you grab (up stays up), right-drag or shift-drag pans,

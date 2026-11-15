@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- rview 0.2.19 (2026-11-15): the drawn model and the gcode's beads as lit solids in one scene.
+<!-- rview 0.2.20 (2026-11-15): the drawn model and the gcode's beads as lit solids in one scene.
      Data: a columnar JSON of the gcode's moves (?file=) and the part's STL (?stl=, &flip=1 if it prints upside down).
      With no ?file= the demo part loads. -->
 <html lang="en">
@@ -16,6 +16,10 @@
   #ui .v { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
   #ui i { width: 11px; height: 11px; display: inline-block; border-radius: 2px; flex: none; }
   #head { display: flex; align-items: center; gap: 6px; }
+  #marks { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+  #marks .dot { position: absolute; width: 7px; height: 7px; margin: -4px 0 0 -4px; border-radius: 50%; background: #ff3bd4; border: 1px solid #fff; }
+  #marks .dot.b { background: #fff; border-color: #ff3bd4; }
+  #marks .lab { position: absolute; transform: translate(8px, -50%); font: 11px/1.25 ui-monospace, monospace; color: #fff; background: #000c; border-left: 2px solid #ff3bd4; padding: 1px 5px; white-space: pre; }
   #head label { flex: 1; min-width: 0; }
   #fold { flex: none; min-width: 28px; height: 26px; background: #333; color: #ddd; border: 1px solid #555; border-radius: 3px; font: inherit; cursor: pointer; }
   #ui.shut { width: auto; padding: 4px; overflow: hidden; }   /* collapsed: only the button is left */
@@ -66,6 +70,7 @@
     </div>
   </div>
 </div>
+<div id="marks"></div>
 <div id="ui">
   <div id="head"><label>part <select id="part"></select></label><button id="fold" type="button" title="hide the controls (h)">&laquo;</button></div>
   <h3>Model &harr; print &harr; gcode</h3>
@@ -80,6 +85,8 @@
   <h3>Cut</h3>
   <label>z max <input type="range" id="zmax" min="0" max="1" step="0.01" value="1"><span class="v" id="zmax_v"></span></label>
   <label><input type="checkbox" id="section"> half section</label>
+  <label>z &times; <input type="range" id="zx" min="1" max="20" step="0.5" value="1"><span class="v" id="zx_v"></span></label>
+  <label id="marks_row" style="display:none"><input type="checkbox" id="show_marks" checked> <span id="marks_n">marks</span></label>
   <h3>Look</h3>
   <label>exposure <input type="range" id="expo" min="0.3" max="2.5" step="0.05" value="1"></label>
   <label>shadows <input type="range" id="ao" min="0" max="2" step="0.05" value="1"></label>
@@ -135,7 +142,7 @@ if (PART) {
 const TYPE_COL = { 'External perimeter': 0x3b82f6, 'Perimeter': 0x7fb2ff, 'Overhang perimeter': 0x22d3ee,
   'Solid infill': 0xa855f7, 'Top solid infill': 0xec4899, 'Internal infill': 0x8b5cf6, 'Bridge infill': 0x14b8a6,
   'Skirt/Brim': 0x777777, 'Support material': 0x65a30d, 'Gap fill': 0xfacc15, 'Custom': 0x888888,
-  'Doubled': 0xffffff };   // moves laid over an earlier bead at the same height, marked in the data
+  'Doubled': 0xffffff, 'Falling': 0xff3bd4 };   // moves laid over an earlier bead at the same height, marked in the data
 const SPS_COL = 0xff8a1f;
 const PLASTIC = new THREE.Color(Q.get('color') ? '#' + Q.get('color') : 0xb30f14);
 const KS = +(Q.get('k') ?? 6);          // arc steps on each side of a bead's section
@@ -451,6 +458,7 @@ function jogs() {
 function tick() {
   jogs();
   if (arrows && arrows.visible && dirty > 0) placeArrows();
+  if (marks.length && dirty > 0) placeMarks();
   if (now !== null) marker.scale.setScalar(Math.max(depthOf(nowPos), camera.near) * 0.035);
   if (glide) {
     const t = Math.min(1, (performance.now() - glide.t0) / 260), e = t * t * (3 - 2 * t);
@@ -531,6 +539,37 @@ function placeArrows() {
 
 // ---- beads: each unbroken run of extruding moves swept as one rounded solid -----------------
 let D = null, S = null, N = 0, groups = [], box = new THREE.Box3(), centre = new THREE.Vector3();
+
+// ---- marks: places the data names (meta-free list D.marks of { a: [x,y,z], b: [x,y,z], text }), e.g. where the
+// nozzle goes down; a dot at each end, the text beside the first end once the mark is long enough on screen
+let marks = [];
+function buildMarks() {
+  const host = $('marks'); host.innerHTML = ''; marks = [];
+  for (const m of D.marks ?? []) {
+    const e = { a: new THREE.Vector3(...m.a), b: new THREE.Vector3(...m.b), da: document.createElement('div'), db: document.createElement('div'), lab: document.createElement('div') };
+    e.da.className = 'dot'; e.db.className = 'dot b'; e.lab.className = 'lab'; e.lab.textContent = m.text;
+    host.append(e.da, e.db, e.lab); marks.push(e);
+  }
+  $('marks_row').style.display = marks.length ? '' : 'none'; $('marks_n').textContent = `marks (${marks.length})`;
+}
+const _mp = new THREE.Vector3();
+function placeMarks() {
+  const w = canvas.clientWidth, h = canvas.clientHeight, zx = scene.scale.z, on = $('show_marks').checked, top = +$('zmax').value;
+  const low = top < +$('zmax').max - 0.06 ? top - 0.21 : -1e9;      // with the height cut in use: only the marks of the layer under it
+  const px = (v, el) => {
+    _mp.set(v.x, v.y, v.z * zx).project(camera);
+    const ok = on && _mp.z < 1 && Math.abs(_mp.x) < 1.05 && Math.abs(_mp.y) < 1.05 && v.z <= top + 1e-6 && v.z >= low;
+    el.style.display = ok ? '' : 'none';
+    const x = (_mp.x + 1) / 2 * w, y = (1 - _mp.y) / 2 * h; el.style.left = x + 'px'; el.style.top = y + 'px';
+    return ok ? [x, y] : null;
+  };
+  for (const e of marks) {
+    const pa = px(e.a, e.da), pb = px(e.b, e.db);
+    const far = pa && pb && Math.hypot(pa[0] - pb[0], pa[1] - pb[1]) > 45;      // the text only once the two ends stand apart
+    e.lab.style.display = far ? '' : 'none';
+    if (far) { e.lab.style.left = pa[0] + 'px'; e.lab.style.top = pa[1] + 'px'; }
+  }
+}
 
 function groupOf(i) { return S.src[i] === 1 ? 'sps skin' : D.meta.types[S.type[i]]; }
 
@@ -638,8 +677,9 @@ function load(data) {
   groups.forEach((g, j) => { $('g' + j).oninput = $('o' + j).oninput = apply; });
   box.getCenter(centre); origin.set(centre.x, centre.y, 0);
   buildArrows(); $('hsize').addEventListener('input', () => { buildArrows(); apply(); });
+  buildMarks();
   $('zmax').max = (box.max.z + 0.05).toFixed(2); $('zmax').value = $('zmax').max;
-  $('status').textContent = `rview 0.2.19 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
+  $('status').textContent = `rview 0.2.20 · ${N} moves, ${(tris / 1e6).toFixed(2)} M triangles`;
   const stl = Q.get('stl');
   if (stl) new STLLoader().load(stl, geo => {
     geo = toCreasedNormals(geo, Math.PI / 5);
@@ -660,7 +700,7 @@ function start() {
   key.target.position.copy(centre); key.position.set(centre.x - r * 1.1, centre.y - r * 1.6, centre.z + r * 2.2);
   const sc = key.shadow.camera; sc.left = sc.bottom = -r * 0.9; sc.right = sc.top = r * 0.9; sc.near = r * 0.5; sc.far = r * 6; sc.updateProjectionMatrix();
   rim.target.position.copy(centre); rim.position.set(centre.x + r * 2, centre.y + r * 1.5, centre.z + r * 0.8);
-  for (const id of ['blend', 'show_model', 'op_model', 'show_hops', 'hsize', 'zmax', 'section', 'expo', 'ao', 'gloss', 'light_bg']) {
+  for (const id of ['blend', 'show_model', 'op_model', 'show_hops', 'hsize', 'zmax', 'section', 'zx', 'show_marks', 'expo', 'ao', 'gloss', 'light_bg']) {
     if (Q.has(id)) { const e = $(id); if (e.type === 'checkbox') e.checked = Q.get(id) === '1'; else e.value = Q.get(id); }
     $(id).addEventListener('input', apply);
   }
@@ -703,8 +743,10 @@ function apply() {
     model.material.clippingPlanes = planes;
   }
   planes = $('section').checked ? [zPlane, secPlane] : [zPlane];
-  zPlane.constant = +$('zmax').value; secPlane.constant = -centre.y;
-  $('zmax_v').textContent = (+$('zmax').value).toFixed(2);
+  const zx = +$('zx').value;                       // heights drawn zx times taller, to read falls and steps
+  if (scene.scale.z !== zx) { scene.scale.z = zx; scene.updateMatrixWorld(true); }
+  zPlane.constant = +$('zmax').value * zx; secPlane.constant = -centre.y;
+  $('zmax_v').textContent = (+$('zmax').value).toFixed(2); $('zx_v').textContent = zx === 1 ? '' : zx + '\u00d7';
   groups.forEach((g, j) => {
     const op = +$('o' + j).value;
     g.mesh.visible = $('g' + j).checked && op > 0.004 && (t > 0.001 || !model || !$('show_model').checked);
@@ -742,7 +784,7 @@ addEventListener('keydown', e => {
   if (e.key === 'c') {
     const p = camera.position, q = lookPoint(), u = new URL(location.href);
     u.searchParams.set('cam', [p.x, p.y, p.z, q.x, q.y, q.z].map(x => x.toFixed(2)).join(','));
-    for (const id of ['blend', 'zmax', 'hsize', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
+    for (const id of ['blend', 'zmax', 'zx', 'hsize', 'expo', 'ao', 'gloss']) u.searchParams.set(id, $(id).value);
     if (now === null) u.searchParams.delete('now'); else u.searchParams.set('now', now.toFixed(2));
     u.searchParams.set('fade', TU.len.value.toFixed(2)); u.searchParams.set('prof', TU.prof.value.toFixed(2)); u.searchParams.set('follow', follow ? '1' : '0');
     for (const id of ['section', 'light_bg', 'show_hops']) u.searchParams.set(id, $(id).checked ? '1' : '0');

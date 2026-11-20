@@ -36,7 +36,8 @@ Live: <https://mitselek.github.io/rview/>
 ## Data
 
 The page ships with several parts, picked in the panel or with `?part=`; the list shows when each
-was put on the page (month-day hour:minute) and runs newest first (`urt02` is the Urikosa tile, a 36 mm rounded triangle 2.8 thick whose
+was put on the page (month-day hour:minute) and runs newest first (`urt03` is `urt02` plus the prime cylinder, a 10 mm 2-strand braided tube behind the tile that each
+tool primes on before its first bead on the part, not printed yet, 6 MB; `urt02` is the Urikosa tile, a 36 mm rounded triangle 2.8 thick whose
 outer wall is a single-path 3-strand braid round its 1.24 mm corners and 0.6 mm chamfers, in two tools (gold body,
 yellow top two layers), not printed yet, 5 MB; the 2 x 2 plate `m3u40` is
 37 MB and loads with coarser bead sections; `w25r01` is a 118 mm bearing race, plain PrusaSlicer, 22 MB,

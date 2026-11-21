@@ -52,7 +52,7 @@ inside of the wall), `m3u35` (the plain model, its two bottom layers pulled in a
 
 The JSON holds one entry per gcode move in columns (`seg.x0 … z1`, `w` bead width, `h` the move's
 own layer height (optional: without it every bead is drawn at `meta.height`), `kind`
-0 bead / 1 travel / 2 retract, `src` 1 for the single-path skin, `type` index into `meta.types`)
+0 bead / 1 travel / 2 retract, `src` 1 for the single-path skin, 2 for a top-face plane laid inside it, `type` index into `meta.types`)
 plus `meta.height` (layer height), `meta.count`, `meta.centre` and the `hops` list (`x y z`, `dir`,
 `vec`, `radial`, `flags`). The extractor that writes it is not in this
 repository yet.
